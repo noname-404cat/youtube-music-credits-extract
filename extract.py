@@ -19,11 +19,15 @@ _MULTI_NAME = re.compile(r"\s*[/／]\s*")
 # 「絵」「動画」は Main Animation ＆ IIlustration のような複合ラベルがあるため部分一致。
 # 綴り揺れ(IIlustration)を吸収するため i/l の繰り返しを許す。
 # 「作詞」「作曲」は Music Video 等への誤爆を避けるため完全一致。
+# Music&Lyrics は作詞と作曲を兼ねるので両方の列に入れる。
+# RAP Lyrics はラップ部分の作詞者。作詞に入れるが、名前に (RAP) を付けて曲全体の作詞者と区別する。
+# 「サムネ」を含むラベルはサムネイル担当で、動画の絵ではないので除外する。
 _LABEL_RULES = [
-    ("作曲", [r"^music$", r"^composer?$", r"^compose$", r"^作曲$"], True),
-    ("作詞", [r"^lyrics?$", r"^作詞$"], True),
-    ("絵", [r"i{1,3}l{0,3}ustrat", r"イラスト", r"作画"], False),
-    ("動画", [r"movie", r"^動画$"], False),
+    (("作曲", "作詞"), [r"^musiclyrics$"], True),
+    (("作曲",), [r"^music$", r"^composer?$", r"^compose$", r"^作曲$"], True),
+    (("作詞",), [r"^lyrics?$", r"^作詞$", r"^raplyrics$"], True),
+    (("絵",), [r"i{1,3}l{0,3}ust?r", r"イラスト", r"作画"], False),
+    (("動画",), [r"movie", r"^動画$"], False),
 ]
 
 # 歌詞全文をクレジットとして誤取得しないための上限
@@ -97,36 +101,61 @@ def parse_credit_blocks(description):
     return blocks
 
 
-def _match_column(label):
+def _match_columns(label):
+    """ラベルが入る列を返す。どの列にも当たらなければ空。"""
     normalized = _normalize_label(label)
-    for column, patterns, exact in _LABEL_RULES:
+    if "サムネ" in normalized:
+        return ()
+    for columns, patterns, exact in _LABEL_RULES:
         for pattern in patterns:
             if exact:
                 if re.fullmatch(pattern.strip("^$"), normalized):
-                    return column
+                    return columns
             elif re.search(pattern, normalized):
-                return column
-    return None
+                return columns
+    return ()
 
 
 def credits_by_column(description):
     """列名 -> {names, suspect} の辞書。取れなかった列は入らない。"""
     found = {}
     for block in parse_credit_blocks(description):
-        column = _match_column(block["label"])
-        if column is None or column in found:
-            continue  # 同じラベルの2回目(歌詞見出し等)は無視する
+        columns = _match_columns(block["label"])
+        if not columns:
+            continue
+        normalized = _normalize_label(block["label"])
         names = _names_from(block["values"])
-        suspect = None
-        if not block["before_cutoff"]:
-            suspect = f"{column}: 敬称略より後ろのラベルしか無い"
-        elif not names:
-            suspect = f"{column}: ラベルはあるが値が空"
-        elif len(names) > _MAX_VALUE_LINES:
-            suspect = f"{column}: 値が{len(names)}件あり多すぎる"
-        elif any(len(n) > _MAX_NAME_LEN for n in names):
-            suspect = f"{column}: 値が長すぎる(歌詞混入の疑い)"
-        found[column] = {"names": names, "suspect": suspect, "label": block["label"]}
+        if normalized.startswith("rap"):
+            names = [f"{n}(RAP)" for n in names]
+        for column in columns:
+            entry = found.get(column)
+            if entry is not None:
+                # 同じラベルの2回目(歌詞見出し等)は無視する。
+                # 作詞だけは、ラベルが違っても(Lyrics と RAP Lyrics)どちらも敬称略より前なら名前を足す。
+                if (
+                    column == "作詞"
+                    and block["before_cutoff"]
+                    and entry["suspect"] is None
+                    and normalized not in entry["seen"]
+                ):
+                    entry["names"].extend(n for n in names if n not in entry["names"])
+                    entry["seen"].add(normalized)
+                continue
+            suspect = None
+            if not block["before_cutoff"]:
+                suspect = f"{column}: 敬称略より後ろのラベルしか無い"
+            elif not names:
+                suspect = f"{column}: ラベルはあるが値が空"
+            elif len(names) > _MAX_VALUE_LINES:
+                suspect = f"{column}: 値が{len(names)}件あり多すぎる"
+            elif any(len(n) > _MAX_NAME_LEN for n in names):
+                suspect = f"{column}: 値が長すぎる(歌詞混入の疑い)"
+            found[column] = {
+                "names": list(names),
+                "suspect": suspect,
+                "label": block["label"],
+                "seen": {normalized},
+            }
     return found
 
 
@@ -256,12 +285,13 @@ def build_row(video, category):
     singers, singer_note = extract_singers(title)
     credits = credits_by_column(description)
 
-    # 曲名が1つに決まらず、本家様欄に2曲以上並ぶ動画はメドレーとして曲の一覧を出す
-    medley = [] if song else extract_medley_songs(description)
-    if len(medley) < 2:
-        medley = []
+    # タイトルに「メドレー」があり、本家様欄に2曲以上並ぶ動画は、曲名を空にして曲の一覧を出す。
+    # 本家様欄が2曲の通常のカバーもあるため、曲数だけでは判定しない。
+    medley = extract_medley_songs(description)
+    if "メドレー" in title and len(medley) >= 2:
+        song, original_artist, song_note = None, None, None
     else:
-        song_note = None
+        medley = []
 
     notes = [song_note] if song_note else []
     if singer_note and singer_note != SINGERS_GUESSED:
