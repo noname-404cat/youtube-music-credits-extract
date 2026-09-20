@@ -62,6 +62,26 @@ def honke_row(video, playlist):
 
 
 HONKE_FIELDS = ["再生リスト", "曲タイトル", "曲数", "動画タイトル", "投稿日", "video_id", "動画URL"]
+SONG_FIELDS = ["再生リスト", "曲タイトル", "動画タイトル", "投稿日", "曲順", "曲数", "video_id", "動画URL"]
+
+
+def honke_song_rows(video, playlist):
+    """1曲1行。曲順は本家様欄に書かれた順、曲数はその動画の曲の総数。"""
+    snippet = video["snippet"]
+    songs = extract.extract_medley_songs(snippet.get("description", ""))
+    return [
+        {
+            "再生リスト": playlist,
+            "曲タイトル": song,
+            "動画タイトル": extract.strip_invisible(snippet["title"]),
+            "投稿日": extract.to_jst_date(snippet["publishedAt"]),
+            "曲順": order,
+            "曲数": len(songs),
+            "video_id": video["id"],
+            "動画URL": f"https://youtu.be/{video['id']}",
+        }
+        for order, song in enumerate(songs, start=1)
+    ]
 
 
 def collect_honke(api_key):
@@ -132,10 +152,21 @@ def audit_honke(per_playlist, playlist_of, mine, foreign, missing, rows):
 def run_honke(args):
     api_key = fb.get_api_key()
     playlist_of, per_playlist, mine, foreign, missing = collect_honke(api_key)
-    rows = [honke_row(v, playlist_of[v["id"]]) for v in mine if has_honke(v)]
-    rows.sort(key=lambda r: r["投稿日"], reverse=True)
-    write_csv(args.out, HONKE_FIELDS, rows)
-    print(f"{len(rows)} 行を {args.out} に書き出した（再生リスト合計 {len(playlist_of)} 本）")
+    with_honke = sorted(
+        (v for v in mine if has_honke(v)),
+        key=lambda v: v["snippet"]["publishedAt"],
+        reverse=True,
+    )
+    rows = [honke_row(v, playlist_of[v["id"]]) for v in with_honke]
+    song_rows = [r for v in with_honke for r in honke_song_rows(v, playlist_of[v["id"]])]
+    write_csv(args.out, SONG_FIELDS, song_rows)
+    print(
+        f"{len(song_rows)} 曲（{len(rows)} 本の動画）を {args.out} に書き出した"
+        f"（再生リスト合計 {len(playlist_of)} 本）"
+    )
+    if args.videos_out:
+        write_csv(args.videos_out, HONKE_FIELDS, rows)
+        print(f"動画ごとの1行版を {args.videos_out} に書き出した")
     if not args.no_audit:
         audit_honke(per_playlist, playlist_of, mine, foreign, missing, rows)
 
@@ -403,7 +434,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     honke = sub.add_parser("honke", help="日常・歌チャレンジ再生リストの本家様つき動画")
-    honke.add_argument("--out", default="honke.csv")
+    honke.add_argument("--out", default="honke.csv", help="1曲1行のCSV")
+    honke.add_argument("--videos-out", help="動画ごとの1行版のCSV（任意）")
     honke.add_argument("--no-audit", action="store_true")
     honke.set_defaults(run=run_honke)
 

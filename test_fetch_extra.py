@@ -74,6 +74,53 @@ def test_honke_row_lists_every_song_of_a_medley():
     assert row["曲タイトル"].split(" | ")[0] == "TVアニメ「ONE PIECE」1000話記念：ウィーアー！"
 
 
+def test_honke_song_rows_are_one_song_per_row_in_order():
+    rows = fetch_extra.honke_song_rows(fixtures.COVER_ANISON_MEDLEY, "日常")
+    assert len(rows) == 6
+    assert [r["曲順"] for r in rows] == [1, 2, 3, 4, 5, 6]
+    assert {r["曲数"] for r in rows} == {6}
+    assert rows[0]["曲タイトル"] == "TVアニメ「ONE PIECE」1000話記念：ウィーアー！"
+    assert {r["video_id"] for r in rows} == {"JaFgv0Ovz8A"}
+    assert list(rows[0]) == fetch_extra.SONG_FIELDS
+
+
+def test_honke_song_rows_keep_song_titles_that_contain_the_joiner():
+    """曲タイトルに ` | ` があっても、行を分けたあとなので壊れない（結合して再分割しない）。"""
+    video = make_video("a", "t", "▼本家様\nA | B\nhttps://youtu.be/x\n\n" + "┄" * 10)
+    rows = fetch_extra.honke_song_rows(video, "日常")
+    assert [r["曲タイトル"] for r in rows] == ["A | B"]
+
+
+def test_run_honke_writes_one_row_per_song_newest_first():
+    import csv
+    import os
+    import sys
+    import tempfile
+
+    ids = fetch_extra.HONKE_PLAYLISTS
+    old = make_video("old", "古い", HONKE_DESCRIPTION, published="2025-01-01T00:00:00Z")
+    new_description = "▼本家様\nX\nhttps://youtu.be/1\n\nY\nhttps://youtu.be/2\n\n" + "┄" * 10
+    new = make_video("new", "新しい", new_description, published="2026-01-01T00:00:00Z")
+    original_api, original_key, original_argv = fb.api_get, fb.get_api_key, sys.argv
+    fb.api_get = fake_api({ids["日常"]: ["old", "new"], ids["歌チャレンジ"]: []}, {"old": old, "new": new})
+    fb.get_api_key = lambda: "key"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "honke.csv")
+        sys.argv = ["fetch_extra.py", "honke", "--out", out, "--no-audit"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                fetch_extra.main()
+        finally:
+            fb.api_get, fb.get_api_key, sys.argv = original_api, original_key, original_argv
+        with open(out, encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    assert [(r["video_id"], r["曲順"], r["曲タイトル"]) for r in rows] == [
+        ("new", "1", "X"),
+        ("new", "2", "Y"),
+        ("old", "1", "Ado「新時代」"),
+    ], rows
+
+
 def test_collect_honke_skips_other_channels_and_keeps_first_playlist_on_duplicates():
     ids = fetch_extra.HONKE_PLAYLISTS
     videos = {
