@@ -312,10 +312,12 @@ def analyze_shorts(videos):
     result["song_extracted"] = title_song
     result["singers_in_title"] = singer_marked
 
+    # 概要欄の末尾に「××× 毎日更新 ×××」の装飾があり、×は概要欄では数えられない。概要欄は「コラボ」だけを見る。
     result["collab_text"] = sum(
         1
         for v in videos
-        if re.search(r"コラボ|feat\.?|×", v["snippet"]["title"] + v["snippet"].get("description", ""), re.IGNORECASE)
+        if re.search(r"コラボ|feat\.?|×", v["snippet"]["title"], re.IGNORECASE)
+        or "コラボ" in v["snippet"].get("description", "")
     )
     result["with_mention"] = sum(1 for v in videos if "@" in v["snippet"].get("description", ""))
     return result
@@ -347,7 +349,7 @@ def print_shorts_report(result, source):
         print(f"    collab/contributor 等を含むキー: {result['collab_keys']}")
     else:
         print("    APIの応答に collab/contributor/partner を含むキーは無かった")
-    print(f"    タイトル・概要欄に「コラボ」「feat」「×」がある動画: {result['collab_text']} / {n} 本")
+    print(f"    タイトルに「コラボ」「feat」「×」、または概要欄に「コラボ」がある動画: {result['collab_text']} / {n} 本")
     print(f"    概要欄に @ がある動画: {result['with_mention']} / {n} 本")
 
     print()

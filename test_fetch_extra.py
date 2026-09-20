@@ -194,6 +194,19 @@ def test_analyze_shorts_counts_tags_credits_and_collab_keys():
     assert result["singers_in_title"] == 1
 
 
+def test_analyze_shorts_does_not_count_the_footer_decoration_as_collab():
+    """ショートの概要欄末尾の「××× 毎日更新＿＿＿現在483日目！ ×××」を、コラボ表記と数えない。"""
+    footer = "#shorts #シクフォニ\n××× 毎日更新＿＿＿現在483日目！ ×××"
+    result = fetch_extra.analyze_shorts([make_video("s2", "ルールを守って剣と盾チャレンジ【3D】", footer)])
+    assert result["collab_text"] == 0
+
+
+def test_analyze_shorts_counts_collab_word_in_description():
+    description = "▼ハンドレッドノートさん側のコラボ動画はこちら\nhttps://youtube.com/shorts/x"
+    result = fetch_extra.analyze_shorts([make_video("s3", "ラストが神すぎる絵しりとり", description)])
+    assert result["collab_text"] == 1
+
+
 def test_analyze_shorts_reports_no_collab_keys_when_absent():
     result = fetch_extra.analyze_shorts([make_video("s2", "ただのショート", "説明なし")])
     assert result["collab_keys"] == []
