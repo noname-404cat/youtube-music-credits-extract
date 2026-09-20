@@ -136,6 +136,9 @@ _HONKE_SONG = re.compile(r"[『「]\s*(?P<song>[^』」]+?)\s*[』」]")
 _TRAILING_BRACKET = re.compile(r"【(?P<inner>[^【】]*)】\s*$")
 _MEMBER_SPLIT = re.compile(r"\s*[×xX＆&,、・･]\s*")
 
+# 歌唱者の仮置きは大半の動画に当たるため、要確認とは別の列に出す
+SINGERS_GUESSED = "タイトルに歌唱者の表記が無く全員と仮置き"
+
 
 def extract_song(title, description):
     """曲名と原曲アーティストを返す。取れなければ (None, None, 理由)。"""
@@ -161,6 +164,26 @@ def extract_song(title, description):
         return honke.group("song").strip(), None, "タイトルから取れず本家様欄から推定"
 
     return None, None, "タイトルが既知の形式に当てはまらない"
+
+
+def extract_medley_songs(description):
+    """▼本家様 欄に並ぶ曲を、書かれた表記のまま順に返す。
+
+    曲名と原曲アーティストの表記は動画ごとにばらばら（「そばかす」「LiSA『紅蓮華』-MUSiC CLiP-」等）
+    なので分離せず、行をそのまま残す。URLと「※」の注記は捨てる。
+    """
+    text = strip_invisible(description)
+    if "▼本家様" not in text:
+        return []
+    songs = []
+    for line in text.split("▼本家様", 1)[1].split("\n"):
+        s = line.strip()
+        if _DIVIDER.match(s) or s.startswith("▼"):
+            break
+        if not s or s.startswith(("http://", "https://", "※")):
+            continue
+        songs.append(s)
+    return songs
 
 
 def _honke_block(description):
@@ -190,7 +213,7 @@ def extract_singers(title):
             if names:
                 return names, f"メンバー名簿に無い表記: {'/'.join(unknown)}"
 
-    return list(MEMBERS), "タイトルに歌唱者の表記が無く全員と仮置き"
+    return list(MEMBERS), SINGERS_GUESSED
 
 
 def to_jst_date(published_at):
@@ -207,12 +230,14 @@ ROW_FIELDS = [
     "チャンネル",
     "タイトル",
     "歌ってる人",
+    "歌唱者は推定",
     "作詞",
     "作曲",
     "絵",
     "動画",
     "category",
     "原曲アーティスト",
+    "メドレー収録曲",
     "video_id",
     "動画URL",
     "要確認",
@@ -231,13 +256,24 @@ def build_row(video, category):
     singers, singer_note = extract_singers(title)
     credits = credits_by_column(description)
 
-    notes = [n for n in (song_note, singer_note) if n]
+    # 曲名が1つに決まらず、本家様欄に2曲以上並ぶ動画はメドレーとして曲の一覧を出す
+    medley = [] if song else extract_medley_songs(description)
+    if len(medley) < 2:
+        medley = []
+    else:
+        song_note = None
+
+    notes = [song_note] if song_note else []
+    if singer_note and singer_note != SINGERS_GUESSED:
+        notes.append(singer_note)
     values = {}
     for column in ("作詞", "作曲", "絵", "動画"):
         entry = credits.get(column)
         if entry is None:
             values[column] = ""
-            notes.append(f"{column}: 該当ラベルが概要欄に無い")
+            # カバーは作詞作曲が原曲側にあり、概要欄に無いのが通常
+            if not (category == "cover" and column in ("作詞", "作曲")):
+                notes.append(f"{column}: 該当ラベルが概要欄に無い")
             continue
         if entry["suspect"]:
             notes.append(entry["suspect"])
@@ -252,12 +288,14 @@ def build_row(video, category):
         # 曲名の抽出に失敗した行を人手で直すには元タイトルが要る
         "タイトル": strip_invisible(title),
         "歌ってる人": " / ".join(singers),
+        "歌唱者は推定": "推定" if singer_note == SINGERS_GUESSED else "",
         "作詞": values["作詞"],
         "作曲": values["作曲"],
         "絵": values["絵"],
         "動画": values["動画"],
         "category": category,
         "原曲アーティスト": original_artist or "",
+        "メドレー収録曲": " | ".join(medley),
         "video_id": video["id"],
         "動画URL": f"https://youtu.be/{video['id']}",
         "要確認": "要確認" if notes else "",
