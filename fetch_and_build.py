@@ -64,12 +64,12 @@ def fetch_playlist_video_ids(api_key, playlist_id):
     return video_ids
 
 
-def fetch_videos(api_key, video_ids):
+def fetch_videos(api_key, video_ids, part="snippet"):
     """videos.list を50IDずつ束ねて叩く。削除・非公開の動画は返ってこない。"""
     videos = []
     for start in range(0, len(video_ids), 50):
         chunk = video_ids[start : start + 50]
-        page = api_get(api_key, "videos", part="snippet", id=",".join(chunk))
+        page = api_get(api_key, "videos", part=part, id=",".join(chunk))
         videos.extend(page.get("items", []))
     return videos
 
