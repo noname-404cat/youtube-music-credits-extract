@@ -15,6 +15,9 @@ _DIVIDER = re.compile(r"^[┄─━―—=＝\-]{4,}$")
 _HONORIFIC = re.compile(r"敬称略")
 _NAME_CUT = re.compile(r"[　(（]")
 _MULTI_NAME = re.compile(r"\s*[/／]\s*")
+# 全体が括弧の行は注記であって曲名ではない。「（欅坂46）櫻坂46 『…』」のように括弧のあとに続く曲名は残す。
+_NOTE_LINE = re.compile(r"^[(（][^()（）]*[)）]$")
+_GROUP_TAGLINE = "運命を掴み取る最強の6人"
 
 # 「絵」「動画」は Main Animation ＆ IIlustration のような複合ラベルがあるため部分一致。
 # 綴り揺れ(IIlustration)を吸収するため i/l の繰り返しを許す。
@@ -200,6 +203,10 @@ def extract_medley_songs(description):
 
     曲名と原曲アーティストの表記は動画ごとにばらばら（「そばかす」「LiSA『紅蓮華』-MUSiC CLiP-」等）
     なので分離せず、行をそのまま残す。URLと「※」の注記は捨てる。
+
+    区切り線が無い動画（日常の再生リスト）では、本家様欄のあとにクレジット欄や
+    グループ紹介文が続くため、「敬称略」の行で打ち切り、括弧だけの注記
+    （「(公式YouTube動画はございません)」）と紹介文の行は曲として数えない。
     """
     text = strip_invisible(description)
     if "▼本家様" not in text:
@@ -207,9 +214,9 @@ def extract_medley_songs(description):
     songs = []
     for line in text.split("▼本家様", 1)[1].split("\n"):
         s = line.strip()
-        if _DIVIDER.match(s) or s.startswith("▼"):
+        if _DIVIDER.match(s) or s.startswith("▼") or _HONORIFIC.search(s):
             break
-        if not s or s.startswith(("http://", "https://", "※")):
+        if not s or s.startswith(("http://", "https://", "※", _GROUP_TAGLINE)) or _NOTE_LINE.match(s):
             continue
         songs.append(s)
     return songs

@@ -126,6 +126,29 @@ def test_medley_lists_songs_from_honke_section():
     assert "曲名が取れない" not in row["要確認理由"]
 
 
+def test_honke_stops_at_honorific_and_skips_notes_and_tagline():
+    """区切り線の無い概要欄でも、敬称略以降・注記・グループ紹介文を曲に数えない。
+
+    日常の再生リストの実出力（185本）に、(敬称略) 3本・注記1本・紹介文1本の混入があった。
+    概要欄の並びは、その曲タイトルの出方から組んだもの。
+    """
+    description = (
+        "▼本家様\n\n"
+        "Aiobahn +81 feat. ななひら & P丸様。- 天天天国地獄国 (Official Music Video)\n"
+        "https://youtu.be/aaa\n\n"
+        "（欅坂46）櫻坂46 『サイレントマジョリティー』\n"
+        "https://youtu.be/bbb\n\n"
+        "(公式YouTube動画はございません)\n\n"
+        "運命を掴み取る最強の6人による2.5次元タレントグループ\n\n"
+        "(敬称略)\n"
+        "アイキャッチ：LAN\n"
+    )
+    assert extract.extract_medley_songs(description) == [
+        "Aiobahn +81 feat. ななひら & P丸様。- 天天天国地獄国 (Official Music Video)",
+        "（欅坂46）櫻坂46 『サイレントマジョリティー』",
+    ]
+
+
 def test_single_cover_is_not_treated_as_medley():
     row = row_of(fixtures.COVER_SHOUJO_REI, "cover")
     assert row["メドレー収録曲"] == ""
