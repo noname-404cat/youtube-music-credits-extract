@@ -468,9 +468,16 @@ def test_songs_that_look_like_topics_stay_songs():
         "irisout", "人マニア", "テトリス", "可愛くてごめん", "モエチャッカファイア",
         "ドレミの歌", "唱", "ライラック", "はいよろこんで", "混沌ブギ", "ヤラララ", "爆裂愛してる", "ウワサのあの子",
         "プロポーズ", "なぁぜなぁぜ", "リードコントロール", "モニタリング", "アイドル", "最酊",
+        # 判断を確認して曲名と決めたもの
+        "カラスの目", "トンツカタンタン", "真的没喝多",
     ]
     for tag in songs:
         assert not members._is_generic(tag), tag
+
+
+def test_tags_confirmed_as_not_songs():
+    for tag in ("ありナ", "bbbbダンス", "爆弾", "ナガレ", "ズズ", "エジソン", "100万ドルの五稜星"):
+        assert members._is_generic(tag), tag
 
 
 def test_a_short_with_only_person_and_topic_tags_has_no_song():
