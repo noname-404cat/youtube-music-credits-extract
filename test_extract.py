@@ -131,6 +131,50 @@ def test_single_cover_is_not_treated_as_medley():
     assert row["メドレー収録曲"] == ""
 
 
+def test_music_and_lyrics_label_fills_both_columns():
+    """◆Music&Lyrics は作詞と作曲を兼ねる。歌詞見出しの◆Lyricsに引っ張られない。"""
+    row = row_of(fixtures.ORIGINAL_MUSIC_AND_LYRICS)
+    assert row["作詞"] == "ケンカイヨシ", row["作詞"]
+    assert row["作曲"] == "ケンカイヨシ", row["作曲"]
+    assert "作詞" not in row["要確認理由"] and "作曲" not in row["要確認理由"]
+
+
+def test_rap_lyrics_is_added_to_lyricist_with_marker():
+    """RAP Lyrics はラップ部分の作詞者。作詞に足すが (RAP) で曲全体の作詞者と区別する。"""
+    row = row_of(fixtures.ORIGINAL_LYRICS_AND_RAP)
+    assert row["作詞"] == "ふぁるすてぃ / いるま(RAP)", row["作詞"]
+    row = row_of(fixtures.ORIGINAL_MUSIC_LYRICS_AND_RAP)
+    assert row["作詞"] == "ふぁるすてぃ / いるま(RAP)", row["作詞"]
+    assert row["作曲"] == "ふぁるすてぃ", row["作曲"]
+
+
+def test_cover_rap_lyricist_is_marked_as_rap_only():
+    """カバーの作詞にラップ担当が入っても、原曲の作詞者と誤読されない。"""
+    row = row_of(fixtures.COVER_RAP_ONLY, "cover")
+    assert row["作詞"] == "いるま(RAP)", row["作詞"]
+    assert row["作曲"] == ""
+
+
+def test_illusration_typo_is_matched_as_illustration():
+    row = row_of(fixtures.COVER_ILLUSRATION_TYPO, "cover")
+    assert row["絵"] == "トウカ", row["絵"]
+    assert "絵" not in row["要確認理由"]
+
+
+def test_thumbnail_illustrator_is_not_the_illustrator():
+    """◆サムネイラスト はサムネイル担当。絵に入れず、絵が無いものとして要確認にする。"""
+    row = row_of(fixtures.COVER_THUMBNAIL_ILLUST_ONLY, "cover")
+    assert row["絵"] == "", row["絵"]
+    assert "絵: 該当ラベルが概要欄に無い" in row["要確認理由"]
+
+
+def test_cover_with_two_honke_entries_is_not_a_medley():
+    """本家様欄が2曲でも、タイトルに「メドレー」が無ければ通常のカバー。"""
+    row = row_of(fixtures.COVER_TWO_HONKE_NOT_MEDLEY, "cover")
+    assert row["メドレー収録曲"] == ""
+    assert row["曲名"] == "夏祭り", row["曲名"]
+
+
 def test_every_sample_produces_a_song_name():
     for video, category in fixtures.ALL_SAMPLES:
         row = extract.build_row(video, category)
