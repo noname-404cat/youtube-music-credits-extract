@@ -30,7 +30,7 @@ _LABEL_RULES = [
     (("作曲",), [r"^music$", r"^composer?$", r"^compose$", r"^作曲$"], True),
     (("作詞",), [r"^lyrics?$", r"^作詞$", r"^raplyrics$"], True),
     # 正規化で長音符が落ちるため「アニメーション」は「アニメ」で拾う
-    (("絵",), [r"i{1,3}l{0,3}ust?r", r"イラスト", r"作画", r"animation", r"アニメ"], False),
+    (("絵",), [r"i{1,3}l{0,3}ust?r", r"i{1,3}l{1,3}ust", r"イラスト", r"作画", r"animation", r"アニメ"], False),
     (("動画",), [r"movie", r"^動画$"], False),
 ]
 
@@ -91,6 +91,12 @@ def parse_credit_blocks(description):
 
         label = line[1:].strip().strip("◆")
         values = []
+        # メンバーのチャンネルには「◆Movie　あさこ　https://…」のようにラベルと同じ行に名前が続くものがある。
+        # ラベルと名前の区切りは全角スペース。
+        label, _, inline = label.partition("　")
+        label = label.strip()
+        if inline.strip():
+            values.append(inline.strip())
         j = i + 1
         while j < len(lines):
             nxt = lines[j]
@@ -106,16 +112,22 @@ def parse_credit_blocks(description):
 
 
 def _match_columns(label):
-    """ラベルが入る列を返す。どの列にも当たらなければ空。"""
+    """ラベルが入る列を返す。どの列にも当たらなければ空。
+
+    完全一致のラベルはその列だけ。部分一致は複合ラベル（Vocal & Movie & Illust）があるため、
+    当たった列をすべて返す。
+    """
     normalized = _normalize_label(label)
+    partial = []
     for columns, patterns, exact in _LABEL_RULES:
         for pattern in patterns:
             if exact:
                 if re.fullmatch(pattern.strip("^$"), normalized):
                     return columns
             elif re.search(pattern, normalized):
-                return columns
-    return ()
+                partial.extend(c for c in columns if c not in partial)
+                break
+    return tuple(partial)
 
 
 def credits_by_column(description):

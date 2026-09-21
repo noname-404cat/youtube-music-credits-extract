@@ -9,6 +9,9 @@
     # 3. 各メンバーのチャンネルの再生リストと概要欄の書式を調べる
     python3 fetch_extra.py members
 
+    # 4. 各メンバーの曲名・歌唱者・カバー/オリジナルを1動画1行のCSVにする
+    python3 fetch_extra.py member-songs --out member_songs.csv
+
 APIキーは fetch_and_build.py と同じ（環境変数 YOUTUBE_API_KEY か Colab の Secrets）。
 """
 
@@ -19,6 +22,7 @@ import re
 
 import extract
 import fetch_and_build as fb
+import members
 
 HONKE_PLAYLISTS = {
     "日常": "PLppXIlUC-oPyaxRSpRoy-KjULmacUGsiF",
@@ -173,16 +177,7 @@ SHORTS_PARTS = "snippet,contentDetails,statistics"
 # タイトル末尾の【】には曲名以外も入る。曲名として採らない語。
 _NOT_A_SONG = re.compile(r"^(3D|MV|Cover|Short|Shorts|アニメ|漫画|歌ってみた|シクフォニ.*|.*コラボ.*)$", re.IGNORECASE)
 _BRACKET = re.compile(r"【([^【】]+)】")
-_DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
-
-
-def parse_duration(iso):
-    """PT1M30S 形式を秒にする。ライブ等で形式に合わなければ None。"""
-    m = _DURATION.match(iso or "")
-    if not m or not any(m.groups()):
-        return None
-    hours, minutes, seconds = (int(g or 0) for g in m.groups())
-    return hours * 3600 + minutes * 60 + seconds
+parse_duration = members.parse_duration
 
 
 def shorts_song(title):
@@ -274,15 +269,31 @@ def run_shorts(args):
 # 3. 各メンバーのチャンネルの調査
 # --------------------------------------------------------------------------
 
-# 対象の再生リスト名。ALL_UPLOADS は「再生リスト問わず、配信以外すべて」の意味。
+# 対象の再生リスト名と、再生リストに入っていない動画も拾うか（uploads）。
+# uploads は配信以外のアップロードを新しい順に見る。ショートは再生リストに入っていないことがある。
+MEMBER_SOURCES = {
+    "暇72": {"playlists": ["Covered by 暇72", "声真似歌ってみた。", "銀魂×四字熟語"]},
+    "雨乃こさめ": {"playlists": ["オリジナル曲", "歌ってみた！", "ワンコーラス"]},
+    "いるま": {
+        "playlists": [
+            "Original (Solo)",
+            "Original (Group)",
+            "Cover (Solo)",
+            "Rap arrange (Group)",
+            "Rap Collaboration",
+            "Rapppp",
+        ],
+        "uploads": True,
+    },
+    "LAN": {"playlists": ["LAN歌ってみた", "LANオリジナル曲", "おうたのshort"]},
+    "すち": {"playlists": ["歌ってみた"]},
+    "みこと": {"uploads": True},
+}
+# 調査コマンド用。ALL_UPLOADS は「再生リスト問わず、配信以外すべて」の意味。
 ALL_UPLOADS = "＊配信以外すべて"
 MEMBER_TARGETS = {
-    "暇72": ["Covered by 暇72", "声真似歌ってみた。", "銀魂×四字熟語"],
-    "雨乃こさめ": ["オリジナル曲", "歌ってみた！", "ワンコーラス"],
-    "いるま": [ALL_UPLOADS],
-    "LAN": ["LAN歌ってみた", "KANオリジナル曲", "おうたのshort"],
-    "すち": ["歌ってみた"],
-    "みこと": [ALL_UPLOADS],
+    member: spec.get("playlists", []) + ([ALL_UPLOADS] if spec.get("uploads") else [])
+    for member, spec in MEMBER_SOURCES.items()
 }
 
 
@@ -390,7 +401,6 @@ def run_members(args):
             others = [v for v in videos if "liveStreamingDetails" not in v]
             print(f"  アップロードの新しい {len(videos)} 本: 配信 {len(streams)} 本 / 配信以外 {len(others)} 本")
             describe_videos(others, "配信以外", args.sample)
-            continue
 
         for target, found in match_playlists(playlists, targets).items():
             if not found:
@@ -403,6 +413,110 @@ def run_members(args):
 
 
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# 4. 各メンバーの曲名リスト
+# --------------------------------------------------------------------------
+
+
+def collect_member_videos(api_key, channel_id, spec, uploads_limit):
+    """(動画, 再生リスト名 または None) のリストと、集計用の情報を返す。
+
+    再生リスト経由の動画は運営が選んだ曲として扱う（再生リスト名は None にならない）。
+    uploads が指定されたメンバーは、再生リストに入っていない動画も配信以外に限って足す。
+    """
+    parts = "snippet,contentDetails,liveStreamingDetails"
+    stats = {"missing_playlists": [], "foreign": 0, "live_skipped": 0}
+    playlists = fetch_channel_playlists(api_key, channel_id)
+
+    playlist_of = {}
+    for target, found in match_playlists(playlists, spec.get("playlists", [])).items():
+        if not found:
+            stats["missing_playlists"].append(target)
+            continue
+        for playlist in found:
+            for video_id in fb.fetch_playlist_video_ids(api_key, playlist["id"]):
+                playlist_of.setdefault(video_id, playlist["snippet"]["title"])
+
+    fetched = {v["id"]: v for v in fb.fetch_videos(api_key, list(playlist_of), part=parts)}
+    result = [(fetched[v], name) for v, name in playlist_of.items() if v in fetched]
+
+    if spec.get("uploads"):
+        uploads = "UU" + channel_id[2:]
+        ids = [v for v in fb.fetch_playlist_video_ids(api_key, uploads)[:uploads_limit] if v not in playlist_of]
+        for video in fb.fetch_videos(api_key, ids, part=parts):
+            if "liveStreamingDetails" in video:
+                stats["live_skipped"] += 1
+                continue
+            result.append((video, None))
+
+    own = [(v, p) for v, p in result if v["snippet"].get("channelId") == channel_id]
+    stats["foreign"] = len(result) - len(own)
+    return own, stats
+
+
+def audit_member_songs(stats_of, rows):
+    print()
+    print("=" * 78)
+    print("監査: 各メンバーの曲名リスト")
+    print("=" * 78)
+    for member, stats in stats_of.items():
+        mine = [r for r in rows if r["メンバー"] == member]
+        print()
+        print(f"■ {member}: {len(mine)} 本")
+        if stats is None:
+            print("  チャンネルIDが引けなかった")
+            continue
+        songs = [r for r in mine if r["曲名"]]
+        print(f"  曲名が取れた {len(songs)} 本 / 要確認 {sum(1 for r in mine if r['要確認'])} 本")
+        for name, counter in (
+            ("曲名の出所", collections.Counter(r["曲名の出所"] or "(取れず)" for r in mine)),
+            ("category", collections.Counter(r["category"] or "(不明)" for r in mine)),
+            ("歌唱者の出所", collections.Counter(r["歌唱者の出所"] for r in mine)),
+        ):
+            print(f"  {name}: " + "  ".join(f"{k}={v}" for k, v in counter.most_common()))
+        print(f"  絵あり {sum(1 for r in mine if r['絵'])} 本 / 動画あり {sum(1 for r in mine if r['動画'])} 本")
+        if stats["missing_playlists"]:
+            print(f"  見つからなかった再生リスト: {stats['missing_playlists']}")
+        if stats["foreign"] or stats["live_skipped"]:
+            print(f"  除外: 他チャンネルの動画 {stats['foreign']} 本 / 配信 {stats['live_skipped']} 本")
+
+        unresolved = [r for r in mine if not r["曲名"]]
+        if unresolved:
+            print(f"  曲名が取れなかった動画 {len(unresolved)} 本（先頭10件）")
+            for row in unresolved[:10]:
+                print(f"    {row['video_id']}  {row['動画タイトル'][:60]}")
+        guests = [r for r in mine if "共演者の可能性" in r["要確認理由"]]
+        for row in guests[:10]:
+            print(f"  共演者の可能性: {row['動画タイトル'][:40]} -> {row['要確認理由']}")
+
+    tags = collections.Counter(r["曲名"] for r in rows if r["曲名の出所"] == "ハッシュタグ")
+    if tags:
+        print()
+        print("  ハッシュタグ由来の曲名（2回以上出るものは曲名ではない可能性。GENERIC_TAGS に足す候補）")
+        for tag, count in tags.most_common(15):
+            if count >= 2:
+                print(f"    {count:3d}  {tag}")
+
+
+def run_member_songs(args):
+    api_key = fb.get_api_key()
+    channels = member_channel_ids(api_key)
+    rows = []
+    stats_of = {}
+    for member, spec in MEMBER_SOURCES.items():
+        info = channels.get(member)
+        if not info:
+            stats_of[member] = None
+            continue
+        collected, stats_of[member] = collect_member_videos(api_key, info["channelId"], spec, args.uploads_limit)
+        collected.sort(key=lambda item: item[0]["snippet"]["publishedAt"], reverse=True)
+        rows.extend(members.member_row(video, member, playlist) for video, playlist in collected)
+    write_csv(args.out, members.MEMBER_FIELDS, rows)
+    print(f"{len(rows)} 本を {args.out} に書き出した")
+    if not args.no_audit:
+        audit_member_songs(stats_of, rows)
 
 
 def write_csv(path, fields, rows):
@@ -427,10 +541,16 @@ def main():
     shorts.add_argument("--no-audit", action="store_true")
     shorts.set_defaults(run=run_shorts)
 
-    members = sub.add_parser("members", help="各メンバーのチャンネルの再生リストと書式の調査")
-    members.add_argument("--limit", type=int, default=30, help="再生リストごとに調べる本数")
-    members.add_argument("--sample", type=int, default=5, help="画面に出すタイトルの本数")
-    members.set_defaults(run=run_members)
+    members_cmd = sub.add_parser("members", help="各メンバーのチャンネルの再生リストと書式の調査")
+    members_cmd.add_argument("--limit", type=int, default=30, help="再生リストごとに調べる本数")
+    members_cmd.add_argument("--sample", type=int, default=5, help="画面に出すタイトルの本数")
+
+    member_songs = sub.add_parser("member-songs", help="各メンバーの曲名・歌唱者・カバー/オリジナルのCSV")
+    member_songs.add_argument("--out", default="member_songs.csv")
+    member_songs.add_argument("--uploads-limit", type=int, default=300, help="再生リスト外も拾うメンバーで、アップロードを新しい順に見る本数")
+    member_songs.add_argument("--no-audit", action="store_true")
+    member_songs.set_defaults(run=run_member_songs)
+    members_cmd.set_defaults(run=run_members)
 
     args = parser.parse_args()
     args.run(args)
