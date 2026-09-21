@@ -23,8 +23,7 @@ Colab で動かす場合、`extract.py` と `fetch_and_build.py` をノートブ
 !python3 fetch_and_build.py --out /content/drive/MyDrive/credits.csv
 ```
 
-リポジトリに置いた場合は、そのリポジトリを clone して `youtube_credits/` に移動してから
-同じコマンドを実行する。
+リポジトリに置いた場合は、clone したリポジトリのルートで同じコマンドを実行する。
 
 Colab はランタイムが切れるとファイルが消えるため、出力先は Google ドライブにする。
 `--out` に前回のCSVを指定すると `video_id` をキーに統合するので、再実行しても行が重複しない。
