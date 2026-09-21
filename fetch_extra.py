@@ -175,26 +175,26 @@ def run_honke(args):
 SHORTS_PLAYLIST = "PLppXIlUC-oPwMYxLewbvGWpVJGzjXVR8P"
 # ショートは概要欄がハッシュタグだけで、クレジットも歌唱者も書かれていない。曲名だけを採る。
 SHORTS_PARTS = "snippet,contentDetails,statistics"
-# タイトル末尾の【】には曲名以外も入る。曲名として採らない語。
-_NOT_A_SONG = re.compile(r"^(3D|MV|Cover|Short|Shorts|アニメ|漫画|歌ってみた|シクフォニ.*|.*コラボ.*)$", re.IGNORECASE)
-_BRACKET = re.compile(r"【([^【】]+)】")
 parse_duration = members.parse_duration
 
 
-def shorts_song(title):
-    """タイトルの【】から曲名を採る。採れなければ (None, 理由)。"""
-    title = extract.strip_invisible(title)
-    names = [b.strip() for b in _BRACKET.findall(title)]
-    songs = [b for b in names if b and not _NOT_A_SONG.match(b)]
-    if len(songs) == 1:
-        return songs[0], None
-    if not songs:
-        return None, "タイトルの【】に曲名が無い"
-    return songs[-1], f"【】が複数あり最後を採った: {' / '.join(songs)}"
+def shorts_song(title, description=""):
+    """(曲名, 注記)。メンバーのショートと同じ規則（members.resolve_song）。
+
+    タイトルの「曲名 / 誰か」→ タイトルと概要欄のハッシュタグ → タイトル末尾の【曲名】の順。
+    シクフォニ歌ってみた Shorts は歌のショートだけの再生リストなので、曲名が取れなければ空にする。
+    """
+    song, _, note = members.resolve_song(title, description, True, False)
+    return song, note
+
+
+def shorts_song_source(title, description=""):
+    return members.resolve_song(title, description, True, False)[1] or ""
 
 
 SHORTS_FIELDS = [
     "曲名",
+    "曲名の出所",
     "投稿日",
     "動画タイトル",
     "秒数",
@@ -209,9 +209,11 @@ SHORTS_FIELDS = [
 
 def shorts_row(video):
     snippet = video["snippet"]
-    song, note = shorts_song(snippet["title"])
+    description = snippet.get("description", "")
+    song, source, note = members.resolve_song(snippet["title"], description, True, False)
     return {
         "曲名": song or "",
+        "曲名の出所": source or "",
         "投稿日": extract.to_jst_date(snippet["publishedAt"]),
         "動画タイトル": extract.strip_invisible(snippet["title"]),
         "秒数": parse_duration(video.get("contentDetails", {}).get("duration")) or "",
@@ -243,10 +245,8 @@ def audit_shorts(videos, foreign, missing, rows):
     print(f"  曲名が取れなかった動画: {len(unresolved)} / {len(rows)} 本")
     for row in unresolved:
         print(f"    {row['video_id']}  {row['動画タイトル']}")
-    ambiguous = [r for r in rows if r["要確認"] and r["曲名"]]
-    print(f"  【】が複数あった動画: {len(ambiguous)} 本")
-    for row in ambiguous[:10]:
-        print(f"    {row['video_id']}  {row['動画タイトル']}  -> {row['曲名']}")
+    sources = collections.Counter(r["曲名の出所"] or "(取れず)" for r in rows)
+    print("  曲名の出所: " + "  ".join(f"{k}={v}" for k, v in sources.most_common()))
 
 
 def run_shorts(args):
