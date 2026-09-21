@@ -162,81 +162,109 @@ def test_parse_duration():
     assert fetch_extra.parse_duration(None) is None
 
 
-def test_flatten_keys_walks_lists_and_nesting():
-    keys = fetch_extra.flatten_keys({"snippet": {"tags": ["a"], "thumbnails": {"default": {"url": "u"}}}, "x": [{"y": 1}]})
-    assert "snippet.tags" in keys
-    assert "snippet.thumbnails.default.url" in keys
-    assert "x[].y" in keys
+def test_shorts_song_takes_the_title_bracket():
+    """実データの例。曲名は末尾の【】に入る。"""
+    assert fetch_extra.shorts_song("夏の終わりにノスタルジックな曲を貴方へ【少女レイ】") == ("少女レイ", None)
+    assert fetch_extra.shorts_song("出すとこ出して歌ってみた【HOT LIMIT】") == ("HOT LIMIT", None)
+    assert fetch_extra.shorts_song("ジョーカーじゃ足りない!【SiX N4TioN】") == ("SiX N4TioN", None)
 
 
-def test_shorts_playlist_id_swaps_the_uc_prefix():
-    assert fetch_extra.shorts_playlist_id("UCGMG8BNfA8gsH9Rn_d_yW2A") == "UUSHGMG8BNfA8gsH9Rn_d_yW2A"
-    assert fetch_extra.uploads_playlist_id("UCGMG8BNfA8gsH9Rn_d_yW2A") == "UUGMG8BNfA8gsH9Rn_d_yW2A"
+def test_shorts_song_ignores_brackets_that_are_not_songs():
+    """【3D】【アニメ】【シクフォニ×…】は曲名ではない。"""
+    song, note = fetch_extra.shorts_song("ルールを守って剣と盾チャレンジ【3D】")
+    assert song is None and "曲名が無い" in note
+    song, note = fetch_extra.shorts_song("ラストが神すぎる絵しりとり【シクフォニ×ハンドレッドノート】")
+    assert song is None, song
+    song, note = fetch_extra.shorts_song("【アニメ】オタクくん～見てる？電話に...【漫画】")
+    assert song is None, song
 
 
-def test_analyze_shorts_counts_tags_credits_and_collab_keys():
-    with_everything = make_video(
-        "s1",
-        "歌ってみた【Cover】【暇72×すち / シクフォニ】",
-        HONKE_DESCRIPTION + "\nコラボ企画",
-        tags=["シクフォニ", "歌ってみた"],
-    )
-    with_everything["snippet"]["contributors"] = [{"channelId": "UCx"}]
-    plain = make_video("s2", "ただのショート", "説明なし")
-    result = fetch_extra.analyze_shorts([with_everything, plain])
-    assert result["n"] == 2
-    assert result["with_tags"] == 1
-    assert result["top_tags"][0][0] in ("シクフォニ", "歌ってみた")
-    assert result["with_honke"] == 1
-    assert result["with_credit_labels"] == 1
-    assert result["collab_keys"] == ["snippet.contributors", "snippet.contributors[].channelId"]
-    assert result["collab_text"] == 1
-    assert result["singers_in_title"] == 1
+def test_shorts_song_flags_a_title_with_two_candidates():
+    song, note = fetch_extra.shorts_song("【青と夏】を歌ったあとに【夏祭り】")
+    assert song == "夏祭り"
+    assert "【】が複数" in note
 
 
-def test_analyze_shorts_does_not_count_the_footer_decoration_as_collab():
-    """ショートの概要欄末尾の「××× 毎日更新＿＿＿現在483日目！ ×××」を、コラボ表記と数えない。"""
-    footer = "#shorts #シクフォニ\n××× 毎日更新＿＿＿現在483日目！ ×××"
-    result = fetch_extra.analyze_shorts([make_video("s2", "ルールを守って剣と盾チャレンジ【3D】", footer)])
-    assert result["collab_text"] == 0
-
-
-def test_analyze_shorts_counts_collab_word_in_description():
-    description = "▼ハンドレッドノートさん側のコラボ動画はこちら\nhttps://youtube.com/shorts/x"
-    result = fetch_extra.analyze_shorts([make_video("s3", "ラストが神すぎる絵しりとり", description)])
-    assert result["collab_text"] == 1
-
-
-def test_analyze_shorts_reports_no_collab_keys_when_absent():
-    result = fetch_extra.analyze_shorts([make_video("s2", "ただのショート", "説明なし")])
-    assert result["collab_keys"] == []
-    out = io.StringIO()
-    with redirect_stdout(out):
-        fetch_extra.print_shorts_report(result, "テスト")
-    assert "collab/contributor/partner を含むキーは無かった" in out.getvalue()
-
-
-def test_shorts_row_has_tags_and_honke_songs():
-    video = make_video("s1", "歌ってみた", HONKE_DESCRIPTION, tags=["a", "b"])
+def test_shorts_row_has_song_and_basics():
+    video = make_video("s1", "この夏の主役は貴方だ【青と夏】", "#shorts", tags=["a", "b"])
+    video["statistics"] = {"viewCount": "12345"}
     row = fetch_extra.shorts_row(video)
-    assert row["タグ"] == "a | b"
-    assert row["本家様の曲"] == "Ado「新時代」"
+    assert list(row) == fetch_extra.SHORTS_FIELDS
+    assert row["曲名"] == "青と夏"
     assert row["秒数"] == 45
-    assert row["投稿日"] == "2026-01-02"
+    assert row["再生数"] == "12345"
+    assert row["タグ"] == "a | b"
+    assert row["要確認"] == ""
 
 
-def test_collect_shorts_falls_back_when_the_shorts_playlist_is_empty():
-    calls = []
-    original_api, original_scan = fb.api_get, fetch_extra.find_shorts_by_scan
-    fb.api_get = fake_api({fetch_extra.shorts_playlist_id(fb.CHANNEL_ID): []}, {})
-    fetch_extra.find_shorts_by_scan = lambda api_key, limit, scan_max: calls.append(limit) or []
+def test_run_shorts_uses_only_the_shorts_playlist_and_skips_other_channels():
+    import csv
+    import os
+    import sys
+    import tempfile
+
+    mine = make_video("s1", "歌ってみた【青と夏】", "#shorts", published="2026-07-31T10:00:00Z")
+    newer = make_video("s2", "歌ってみた【少女レイ】", "#shorts", published="2026-08-31T10:00:00Z")
+    other = make_video("s3", "他人の動画【曲】", "#shorts", channel_id=OTHER_CHANNEL)
+    playlists = {fetch_extra.SHORTS_PLAYLIST: ["s1", "s2", "s3", "gone"]}
+    original_api, original_key, original_argv = fb.api_get, fb.get_api_key, sys.argv
+    fb.api_get = fake_api(playlists, {"s1": mine, "s2": newer, "s3": other})
+    fb.get_api_key = lambda: "key"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "shorts.csv")
+        sys.argv = ["fetch_extra.py", "shorts", "--out", out]
+        try:
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                fetch_extra.main()
+        finally:
+            fb.api_get, fb.get_api_key, sys.argv = original_api, original_key, original_argv
+        with open(out, encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    assert [(r["video_id"], r["曲名"]) for r in rows] == [("s2", "少女レイ"), ("s1", "青と夏")]
+    assert "取得できず" in printed.getvalue()
+
+
+def test_member_channel_ids_come_from_the_members_own_videos_in_the_playlists():
+    """メンバーのチャンネルIDは、シクフォニの再生リストに混ざる本人の動画から引く。"""
+    videos = {
+        "a": make_video("a", "シクフォニの曲", "x"),
+        "b": make_video("b", "いるまのオリ曲", "x", channel_id="UCillma"),
+        "c": make_video("c", "こさめのオリ曲", "x", channel_id="UCkosame"),
+    }
+    videos["b"]["snippet"]["channelTitle"] = "いるま"
+    videos["c"]["snippet"]["channelTitle"] = "雨乃こさめ【シクフォニ】"
+    playlists = {fb.PLAYLISTS["cover"]: ["a", "b"], fb.PLAYLISTS["original"]: ["c"]}
+    original = fb.api_get
+    fb.api_get = fake_api(playlists, videos)
     try:
-        with redirect_stdout(io.StringIO()):
-            videos, source = fetch_extra.collect_shorts("key", 5)
+        found = fetch_extra.member_channel_ids("key")
     finally:
-        fb.api_get, fetch_extra.find_shorts_by_scan = original_api, original_scan
-    assert calls == [5]
-    assert "アップロード一覧" in source
+        fb.api_get = original
+    assert found["いるま"]["channelId"] == "UCillma"
+    assert found["雨乃こさめ"]["channelId"] == "UCkosame"
+    assert "暇72" not in found
+
+
+def test_match_playlists_prefers_an_exact_title():
+    playlists = [
+        {"snippet": {"title": "歌ってみた"}},
+        {"snippet": {"title": "歌ってみた（コラボ）"}},
+        {"snippet": {"title": "雑談"}},
+    ]
+    matched = fetch_extra.match_playlists(playlists, ["歌ってみた"])
+    assert [p["snippet"]["title"] for p in matched["歌ってみた"]] == ["歌ってみた"]
+
+
+def test_match_playlists_falls_back_to_a_partial_title():
+    playlists = [{"snippet": {"title": "LAN歌ってみた リスト"}}]
+    matched = fetch_extra.match_playlists(playlists, ["LAN歌ってみた", "無い名前"])
+    assert [p["snippet"]["title"] for p in matched["LAN歌ってみた"]] == ["LAN歌ってみた リスト"]
+    assert matched["無い名前"] == []
+
+
+def test_match_playlists_skips_the_all_uploads_marker():
+    assert fetch_extra.match_playlists([], [fetch_extra.ALL_UPLOADS]) == {}
 
 
 if __name__ == "__main__":

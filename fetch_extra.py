@@ -3,8 +3,11 @@
     # 1. 「日常」「歌チャレンジ」再生リストから、▼本家様 がある動画の曲タイトル・動画タイトル・投稿日を集める
     python3 fetch_extra.py honke --out honke.csv
 
-    # 2. ショート動画に、長尺と同じ項目（タグ・クレジット・本家様など）があるかを調べる
-    python3 fetch_extra.py shorts --limit 30 --out shorts.csv --dump shorts_sample.json
+    # 2. 「シクフォニ歌ってみた Shorts」再生リストから曲名を集める
+    python3 fetch_extra.py shorts --out shorts.csv
+
+    # 3. 各メンバーのチャンネルの再生リストと概要欄の書式を調べる
+    python3 fetch_extra.py members
 
 APIキーは fetch_and_build.py と同じ（環境変数 YOUTUBE_API_KEY か Colab の Secrets）。
 """
@@ -12,11 +15,7 @@ APIキーは fetch_and_build.py と同じ（環境変数 YOUTUBE_API_KEY か Col
 import argparse
 import collections
 import csv
-import json
 import re
-import sys
-import urllib.error
-import urllib.request
 
 import extract
 import fetch_and_build as fb
@@ -27,14 +26,7 @@ HONKE_PLAYLISTS = {
 }
 HONKE_MARK = "本家様"
 
-# 動画の詳細を広めに取る。ショートに何が付いているかを調べるため。
-SHORTS_PARTS = "snippet,contentDetails,statistics,status,topicDetails,recordingDetails,localizations"
-# ショートは現在3分まで。長尺との境目として使う。
-SHORTS_MAX_SECONDS = 180
-
 _HEADING = re.compile(r"^\s*[▼◆■●▶▷◇]\s*(?P<text>.+?)\s*$")
-_DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
-_COLLAB_KEY = re.compile(r"collab|contribut|partner|co-?creator", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------
@@ -172,8 +164,16 @@ def run_honke(args):
 
 
 # --------------------------------------------------------------------------
-# 2. ショート動画の調査
+# 2. ショート動画（シクフォニ歌ってみた Shorts）
 # --------------------------------------------------------------------------
+
+SHORTS_PLAYLIST = "PLppXIlUC-oPwMYxLewbvGWpVJGzjXVR8P"
+# ショートは概要欄がハッシュタグだけで、クレジットも歌唱者も書かれていない。曲名だけを採る。
+SHORTS_PARTS = "snippet,contentDetails,statistics"
+# タイトル末尾の【】には曲名以外も入る。曲名として採らない語。
+_NOT_A_SONG = re.compile(r"^(3D|MV|Cover|Short|Shorts|アニメ|漫画|歌ってみた|シクフォニ.*|.*コラボ.*)$", re.IGNORECASE)
+_BRACKET = re.compile(r"【([^【】]+)】")
+_DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
 
 
 def parse_duration(iso):
@@ -185,240 +185,221 @@ def parse_duration(iso):
     return hours * 3600 + minutes * 60 + seconds
 
 
-def flatten_keys(obj, prefix=""):
-    """JSON に出てくるキーの経路（snippet.tags など）を集める。リストの中は [] で表す。"""
-    keys = set()
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            path = f"{prefix}.{key}" if prefix else key
-            keys.add(path)
-            keys |= flatten_keys(value, path)
-    elif isinstance(obj, list):
-        for value in obj:
-            keys |= flatten_keys(value, prefix + "[]")
-    return keys
-
-
-def shorts_playlist_id(channel_id):
-    """チャンネルのショート一覧（UC→UUSH）。公式に文書化された仕組みではない。"""
-    return "UUSH" + channel_id[2:]
-
-
-def uploads_playlist_id(channel_id):
-    return "UU" + channel_id[2:]
-
-
-def fetch_recent_playlist_ids(api_key, playlist_id, limit):
-    """再生リストの先頭（新しい順）から limit 件まで。全件は取らない。"""
-    ids = []
-    page_token = None
-    while len(ids) < limit:
-        params = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 50}
-        if page_token:
-            params["pageToken"] = page_token
-        page = fb.api_get(api_key, "playlistItems", **params)
-        ids.extend(item["contentDetails"]["videoId"] for item in page.get("items", []))
-        page_token = page.get("nextPageToken")
-        if not page_token:
-            break
-    return ids[:limit]
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def is_short_by_url(video_id):
-    """youtube.com/shorts/ID はショートなら 200、長尺なら watch へ 30x で飛ばされる。"""
-    opener = urllib.request.build_opener(_NoRedirect)
-    request = urllib.request.Request(
-        f"https://www.youtube.com/shorts/{video_id}", method="HEAD"
-    )
-    try:
-        with opener.open(request, timeout=15) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError:
-        return False
-
-
-def find_shorts_by_scan(api_key, limit, scan_max):
-    """UUSH が使えないときの代替。アップロード一覧を新しい順に見て、3分以下かつ shorts URL が通るものを拾う。"""
-    ids = fetch_recent_playlist_ids(api_key, uploads_playlist_id(fb.CHANNEL_ID), scan_max)
-    videos = []
-    for video in fb.fetch_videos(api_key, ids, part=SHORTS_PARTS):
-        seconds = parse_duration(video["contentDetails"].get("duration"))
-        if seconds is not None and seconds <= SHORTS_MAX_SECONDS and is_short_by_url(video["id"]):
-            videos.append(video)
-            if len(videos) >= limit:
-                break
-    return videos
-
-
-def collect_shorts(api_key, limit, force_scan=False, scan_max=300):
-    """(動画のリスト, 取得方法の説明) を返す。"""
-    if not force_scan:
-        try:
-            ids = fetch_recent_playlist_ids(api_key, shorts_playlist_id(fb.CHANNEL_ID), limit)
-        except urllib.error.HTTPError as exc:
-            print(f"  ショート一覧(UUSH)が取れなかった: HTTP {exc.code}。アップロード一覧を走査する")
-        else:
-            if ids:
-                videos = fb.fetch_videos(api_key, ids, part=SHORTS_PARTS)
-                return videos, "ショート一覧(UUSH)の新しい順"
-            print("  ショート一覧(UUSH)が空だった。アップロード一覧を走査する")
-    videos = find_shorts_by_scan(api_key, limit, scan_max)
-    return videos, f"アップロード一覧の新しい{scan_max}本から、3分以下かつ shorts URL が通るもの"
-
-
-def analyze_shorts(videos):
-    """ショートに何が付いているかを数える。表示は print_shorts_report に任せる。"""
-    result = {"n": len(videos)}
-
-    key_counts = collections.Counter()
-    for video in videos:
-        key_counts.update(flatten_keys(video))
-    result["key_counts"] = key_counts
-    result["collab_keys"] = sorted(k for k in key_counts if _COLLAB_KEY.search(k))
-
-    tag_lists = [v["snippet"].get("tags", []) for v in videos]
-    result["with_tags"] = sum(1 for t in tag_lists if t)
-    result["top_tags"] = collections.Counter(t for tags in tag_lists for t in tags).most_common(15)
-
-    result["durations"] = sorted(
-        d for d in (parse_duration(v["contentDetails"].get("duration")) for v in videos if "contentDetails" in v) if d is not None
-    )
-
-    found = collections.Counter()
-    honke = title_song = singer_marked = credit_labels = 0
-    for video in videos:
-        title = video["snippet"]["title"]
-        description = video["snippet"].get("description", "")
-        credits = extract.credits_by_column(description)
-        for column in credits:
-            found[column] += 1
-        if extract.parse_credit_blocks(description):
-            credit_labels += 1
-        if extract.extract_medley_songs(description):
-            honke += 1
-        song, _, _ = extract.extract_song(title, description)
-        if song:
-            title_song += 1
-        if extract.extract_singers(title)[1] is None:
-            singer_marked += 1
-    result["credit_columns"] = found
-    result["with_credit_labels"] = credit_labels
-    result["with_honke"] = honke
-    result["song_extracted"] = title_song
-    result["singers_in_title"] = singer_marked
-
-    # 概要欄の末尾に「××× 毎日更新 ×××」の装飾があり、×は概要欄では数えられない。概要欄は「コラボ」だけを見る。
-    result["collab_text"] = sum(
-        1
-        for v in videos
-        if re.search(r"コラボ|feat\.?|×", v["snippet"]["title"], re.IGNORECASE)
-        or "コラボ" in v["snippet"].get("description", "")
-    )
-    result["with_mention"] = sum(1 for v in videos if "@" in v["snippet"].get("description", ""))
-    return result
-
-
-def print_shorts_report(result, source):
-    n = result["n"]
-    print()
-    print("=" * 78)
-    print("調査: ショート動画")
-    print("=" * 78)
-    print(f"  対象: {n} 本（{source}）")
-    if not n:
-        return
-
-    durations = result["durations"]
-    if durations:
-        print(f"  長さ(秒): 最短 {durations[0]} / 中央 {durations[len(durations) // 2]} / 最長 {durations[-1]}")
-
-    print()
-    print("  【タグ】")
-    print(f"    snippet.tags がある動画: {result['with_tags']} / {n} 本")
-    for tag, count in result["top_tags"]:
-        print(f"    {count:4d}  {tag}")
-
-    print()
-    print("  【コラボレーター】")
-    if result["collab_keys"]:
-        print(f"    collab/contributor 等を含むキー: {result['collab_keys']}")
-    else:
-        print("    APIの応答に collab/contributor/partner を含むキーは無かった")
-    print(f"    タイトルに「コラボ」「feat」「×」、または概要欄に「コラボ」がある動画: {result['collab_text']} / {n} 本")
-    print(f"    概要欄に @ がある動画: {result['with_mention']} / {n} 本")
-
-    print()
-    print("  【長尺と同じ項目が概要欄・タイトルから取れるか】")
-    print(f"    ◆ラベルのクレジットがある動画: {result['with_credit_labels']} / {n} 本")
-    for column in ("作詞", "作曲", "絵", "動画"):
-        print(f"      {column}: {result['credit_columns'].get(column, 0)} / {n} 本")
-    print(f"    ▼本家様の曲が取れた動画: {result['with_honke']} / {n} 本")
-    print(f"    曲名が取れた動画: {result['song_extracted']} / {n} 本")
-    print(f"    タイトルに歌唱者の表記がある動画: {result['singers_in_title']} / {n} 本")
-
-    print()
-    print("  【videos.list の応答に含まれていたキー（何本中何本に出たか）】")
-    for key, count in sorted(result["key_counts"].items()):
-        print(f"    {count:4d}/{n}  {key}")
+def shorts_song(title):
+    """タイトルの【】から曲名を採る。採れなければ (None, 理由)。"""
+    title = extract.strip_invisible(title)
+    names = [b.strip() for b in _BRACKET.findall(title)]
+    songs = [b for b in names if b and not _NOT_A_SONG.match(b)]
+    if len(songs) == 1:
+        return songs[0], None
+    if not songs:
+        return None, "タイトルの【】に曲名が無い"
+    return songs[-1], f"【】が複数あり最後を採った: {' / '.join(songs)}"
 
 
 SHORTS_FIELDS = [
-    "動画タイトル",
-    "投稿日",
-    "秒数",
-    "タグ",
     "曲名",
-    "歌ってる人",
-    "歌唱者は推定",
-    "作詞",
-    "作曲",
-    "絵",
-    "動画",
-    "本家様の曲",
+    "投稿日",
+    "動画タイトル",
+    "秒数",
+    "再生数",
+    "タグ",
     "video_id",
     "動画URL",
-    "概要欄の先頭",
+    "要確認",
+    "要確認理由",
 ]
 
 
 def shorts_row(video):
-    row = extract.build_row(video, "short")
     snippet = video["snippet"]
+    song, note = shorts_song(snippet["title"])
     return {
-        "動画タイトル": row["タイトル"],
-        "投稿日": row["投稿日"],
+        "曲名": song or "",
+        "投稿日": extract.to_jst_date(snippet["publishedAt"]),
+        "動画タイトル": extract.strip_invisible(snippet["title"]),
         "秒数": parse_duration(video.get("contentDetails", {}).get("duration")) or "",
+        "再生数": video.get("statistics", {}).get("viewCount", ""),
         "タグ": " | ".join(snippet.get("tags", [])),
-        "曲名": row["曲名"],
-        "歌ってる人": row["歌ってる人"],
-        "歌唱者は推定": row["歌唱者は推定"],
-        "作詞": row["作詞"],
-        "作曲": row["作曲"],
-        "絵": row["絵"],
-        "動画": row["動画"],
-        "本家様の曲": " | ".join(extract.extract_medley_songs(snippet.get("description", ""))),
-        "video_id": row["video_id"],
-        "動画URL": row["動画URL"],
-        "概要欄の先頭": snippet.get("description", "")[:200].replace("\n", " ⏎ "),
+        "video_id": video["id"],
+        "動画URL": f"https://youtu.be/{video['id']}",
+        "要確認": "要確認" if note else "",
+        "要確認理由": note or "",
     }
+
+
+def audit_shorts(videos, foreign, missing, rows):
+    print()
+    print("=" * 78)
+    print("監査: ショート（シクフォニ歌ってみた Shorts）")
+    print("=" * 78)
+    print(f"  再生リスト {len(videos) + len(foreign) + len(missing)} 本 / シクフォニのチャンネル {len(videos)} 本")
+    if foreign:
+        print(f"  他チャンネルのため除外: {len(foreign)} 本")
+    if missing:
+        print(f"  取得できず(削除/非公開): {len(missing)} 本  {missing}")
+    durations = sorted(d for d in (r["秒数"] for r in rows) if d)
+    if durations:
+        print(f"  長さ(秒): 最短 {durations[0]} / 中央 {durations[len(durations) // 2]} / 最長 {durations[-1]}")
+
+    unresolved = [r for r in rows if not r["曲名"]]
+    print()
+    print(f"  曲名が取れなかった動画: {len(unresolved)} / {len(rows)} 本")
+    for row in unresolved:
+        print(f"    {row['video_id']}  {row['動画タイトル']}")
+    ambiguous = [r for r in rows if r["要確認"] and r["曲名"]]
+    print(f"  【】が複数あった動画: {len(ambiguous)} 本")
+    for row in ambiguous[:10]:
+        print(f"    {row['video_id']}  {row['動画タイトル']}  -> {row['曲名']}")
 
 
 def run_shorts(args):
     api_key = fb.get_api_key()
-    videos, source = collect_shorts(api_key, args.limit, args.scan, args.scan_max)
+    ids = fb.fetch_playlist_video_ids(api_key, SHORTS_PLAYLIST)
+    fetched = fb.fetch_videos(api_key, ids, part=SHORTS_PARTS)
+    found = {v["id"] for v in fetched}
+    missing = [v for v in ids if v not in found]
+    videos = [v for v in fetched if v["snippet"].get("channelId") == fb.CHANNEL_ID]
+    foreign = [v for v in fetched if v["snippet"].get("channelId") != fb.CHANNEL_ID]
+    videos.sort(key=lambda v: v["snippet"]["publishedAt"], reverse=True)
+
     rows = [shorts_row(v) for v in videos]
     write_csv(args.out, SHORTS_FIELDS, rows)
     print(f"{len(rows)} 行を {args.out} に書き出した")
-    if args.dump:
-        with open(args.dump, "w", encoding="utf-8") as fh:
-            json.dump(videos, fh, ensure_ascii=False, indent=2)
-        print(f"応答の生データを {args.dump} に書き出した")
-    print_shorts_report(analyze_shorts(videos), source)
+    if not args.no_audit:
+        audit_shorts(videos, foreign, missing, rows)
+
+
+# --------------------------------------------------------------------------
+# 3. 各メンバーのチャンネルの調査
+# --------------------------------------------------------------------------
+
+# 対象の再生リスト名。ALL_UPLOADS は「再生リスト問わず、配信以外すべて」の意味。
+ALL_UPLOADS = "＊配信以外すべて"
+MEMBER_TARGETS = {
+    "暇72": ["Covered by 暇72", "声真似歌ってみた。", "銀魂×四字熟語"],
+    "雨乃こさめ": ["オリジナル曲", "歌ってみた！", "ワンコーラス"],
+    "いるま": [ALL_UPLOADS],
+    "LAN": ["LAN歌ってみた", "KANオリジナル曲", "おうたのshort"],
+    "すち": ["歌ってみた"],
+    "みこと": [ALL_UPLOADS],
+}
+
+
+def member_channel_ids(api_key):
+    """メンバーのチャンネルIDを、シクフォニの再生リストに混ざる本人の動画から引く。
+
+    再生リストには各メンバーのオリジナル曲が入っており、その channelId が本人のチャンネル。
+    ハンドル名を当て推量せずに済む。
+    """
+    ids = []
+    for playlist_id in fb.PLAYLISTS.values():
+        ids.extend(fb.fetch_playlist_video_ids(api_key, playlist_id))
+    found = {}
+    for video in fb.fetch_videos(api_key, list(dict.fromkeys(ids))):
+        snippet = video["snippet"]
+        if snippet.get("channelId") == fb.CHANNEL_ID:
+            continue
+        title = snippet.get("channelTitle", "")
+        for member in MEMBER_TARGETS:
+            if member in title:
+                found.setdefault(member, {"channelId": snippet["channelId"], "channelTitle": title})
+    return found
+
+
+def fetch_channel_playlists(api_key, channel_id):
+    playlists = []
+    page_token = None
+    while True:
+        params = {"part": "snippet,contentDetails", "channelId": channel_id, "maxResults": 50}
+        if page_token:
+            params["pageToken"] = page_token
+        page = fb.api_get(api_key, "playlists", **params)
+        playlists.extend(page.get("items", []))
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            break
+    return playlists
+
+
+def match_playlists(playlists, targets):
+    """再生リスト名の完全一致を優先し、無ければ部分一致で拾う。"""
+    matched = {}
+    for target in targets:
+        if target == ALL_UPLOADS:
+            continue
+        exact = [p for p in playlists if p["snippet"]["title"].strip() == target]
+        partial = [p for p in playlists if target in p["snippet"]["title"]]
+        matched[target] = exact or partial
+    return matched
+
+
+def describe_videos(videos, label, sample):
+    """その集まりの書式の規則性を出す。概要欄のラベルとタイトルの形を見る。"""
+    labels = collections.Counter()
+    honke = live = 0
+    for video in videos:
+        description = video["snippet"].get("description", "")
+        for block in extract.parse_credit_blocks(description):
+            if block["before_cutoff"]:
+                labels[block["label"].strip()] += 1
+        if "本家様" in description:
+            honke += 1
+        if video["snippet"].get("liveBroadcastContent") not in (None, "none"):
+            live += 1
+    print(f"    {label}: 調べた {len(videos)} 本 / 本家様あり {honke} 本")
+    if labels:
+        print("      ◆ラベル: " + "  ".join(f"{k}={v}" for k, v in labels.most_common(12)))
+    else:
+        print("      ◆ラベル: 無し")
+    for video in videos[:sample]:
+        snippet = video["snippet"]
+        head = snippet.get("description", "").strip().split("\n")[0][:40]
+        print(f"      - {extract.to_jst_date(snippet['publishedAt'])} {extract.strip_invisible(snippet['title'])[:52]} | {head}")
+
+
+def run_members(args):
+    api_key = fb.get_api_key()
+    channels = member_channel_ids(api_key)
+    print()
+    print("=" * 78)
+    print("調査: 各メンバーのチャンネル")
+    print("=" * 78)
+    for member in MEMBER_TARGETS:
+        info = channels.get(member)
+        print(f"  {member}: {info['channelTitle']} ({info['channelId']})" if info else f"  {member}: チャンネルIDが引けなかった")
+
+    for member, targets in MEMBER_TARGETS.items():
+        info = channels.get(member)
+        print()
+        print("-" * 78)
+        print(f"■ {member}")
+        if not info:
+            print("  チャンネルIDが引けなかったので飛ばす")
+            continue
+        playlists = fetch_channel_playlists(api_key, info["channelId"])
+        print(f"  公開再生リスト {len(playlists)} 本")
+        for playlist in playlists:
+            print(f"    {playlist['contentDetails']['itemCount']:4d} 本  {playlist['snippet']['title']}")
+
+        if ALL_UPLOADS in targets:
+            uploads = "UU" + info["channelId"][2:]
+            ids = fb.fetch_playlist_video_ids(api_key, uploads)[: args.limit]
+            videos = fb.fetch_videos(api_key, ids, part="snippet,contentDetails,liveStreamingDetails")
+            streams = [v for v in videos if "liveStreamingDetails" in v]
+            others = [v for v in videos if "liveStreamingDetails" not in v]
+            print(f"  アップロードの新しい {len(videos)} 本: 配信 {len(streams)} 本 / 配信以外 {len(others)} 本")
+            describe_videos(others, "配信以外", args.sample)
+            continue
+
+        for target, found in match_playlists(playlists, targets).items():
+            if not found:
+                print(f"  「{target}」: 見つからなかった")
+                continue
+            for playlist in found:
+                ids = fb.fetch_playlist_video_ids(api_key, playlist["id"])[: args.limit]
+                videos = fb.fetch_videos(api_key, ids)
+                describe_videos(videos, f"「{playlist['snippet']['title']}」", args.sample)
 
 
 # --------------------------------------------------------------------------
@@ -441,13 +422,15 @@ def main():
     honke.add_argument("--no-audit", action="store_true")
     honke.set_defaults(run=run_honke)
 
-    shorts = sub.add_parser("shorts", help="ショート動画に付いている情報の調査")
-    shorts.add_argument("--limit", type=int, default=30, help="調べるショートの本数（新しい順）")
+    shorts = sub.add_parser("shorts", help="シクフォニ歌ってみた Shorts の曲名")
     shorts.add_argument("--out", default="shorts.csv")
-    shorts.add_argument("--dump", help="APIの応答の生データを書き出すJSON")
-    shorts.add_argument("--scan", action="store_true", help="UUSHを使わずアップロード一覧から探す")
-    shorts.add_argument("--scan-max", type=int, default=300, help="--scan で見る動画の本数")
+    shorts.add_argument("--no-audit", action="store_true")
     shorts.set_defaults(run=run_shorts)
+
+    members = sub.add_parser("members", help="各メンバーのチャンネルの再生リストと書式の調査")
+    members.add_argument("--limit", type=int, default=30, help="再生リストごとに調べる本数")
+    members.add_argument("--sample", type=int, default=5, help="画面に出すタイトルの本数")
+    members.set_defaults(run=run_members)
 
     args = parser.parse_args()
     args.run(args)

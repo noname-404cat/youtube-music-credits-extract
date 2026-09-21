@@ -140,10 +140,10 @@ def audit(videos, category_of, per_playlist, missing, rows, foreign=()):
     for marker, count in honorific.most_common():
         print(f"    {count:4d}  {marker}")
 
-    medleys = [r for r in rows if not r["曲名"] and r["メドレー収録曲"]]
+    medleys = {r["video_id"] for r in rows if int(r["曲数"]) > 1}
     print()
-    print(f"  メドレー（曲名は空・収録曲を抽出）: {len(medleys)} 本")
-    unresolved = [r for r in rows if not r["曲名"] and not r["メドレー収録曲"]]
+    print(f"  メドレー（1曲1行に展開）: {len(medleys)} 本")
+    unresolved = [r for r in rows if not r["曲名"]]
     print(f"  曲名が取れなかった動画: {len(unresolved)} 本")
     for row in unresolved:
         print(f"    {row['video_id']}  {row['タイトル']}")
@@ -158,12 +158,18 @@ def audit(videos, category_of, per_playlist, missing, rows, foreign=()):
         print(f"    {count:4d}  {reason}")
 
 
+def row_key(row):
+    """メドレーは1動画が複数行になるため、video_id だけでは行を区別できない。"""
+    return (row["video_id"], str(row["曲順"]))
+
+
 def load_existing(path):
-    """前回のCSVがあれば video_id をキーに読み込む。再実行しても重複しない。"""
+    """前回のCSVがあれば読み込む。再実行しても行が重複しない。"""
     if not path or not os.path.exists(path):
         return {}
     with open(path, encoding="utf-8-sig", newline="") as fh:
-        return {row["video_id"]: row for row in csv.DictReader(fh)}
+        rows = [row for row in csv.DictReader(fh) if set(extract.ROW_FIELDS) <= set(row)]
+    return {row_key(row): row for row in rows}
 
 
 def write_csv(path, rows):
@@ -183,13 +189,15 @@ def main():
     videos, category_of, per_playlist, missing, foreign = collect(api_key)
 
     merged = load_existing(args.out)
-    for video in foreign:
-        merged.pop(video["id"], None)  # 以前の実行で入れた他チャンネルの行を消す
+    # 以前の実行で入れた他チャンネルの行と、今回作り直す動画の古い行を消す
+    stale = {v["id"] for v in foreign} | {v["id"] for v in videos}
+    merged = {key: row for key, row in merged.items() if key[0] not in stale}
     for video in videos:
-        row = extract.build_row(video, category_of[video["id"]])
-        merged[row["video_id"]] = row
+        for row in extract.build_rows(video, category_of[video["id"]]):
+            merged[row_key(row)] = row
 
-    rows = sorted(merged.values(), key=lambda r: r["投稿日"], reverse=True)
+    # 新しい動画が上、同じ動画の中は曲順どおり（-曲順 と reverse で昇順にする）
+    rows = sorted(merged.values(), key=lambda r: (r["投稿日"], r["video_id"], -int(r["曲順"])), reverse=True)
     write_csv(args.out, rows)
     print(f"{len(rows)} 行を {args.out} に書き出した（今回の取得: {len(videos)} 本）")
 

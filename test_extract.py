@@ -113,17 +113,19 @@ def test_cover_without_lyricist_label_is_not_flagged():
     assert "作曲: 該当ラベルが概要欄に無い" not in row["要確認理由"]
 
 
-def test_medley_lists_songs_from_honke_section():
-    """曲名が1つに決まらないメドレーは、▼本家様 欄の曲を表記のまま順に出す。"""
-    row = row_of(fixtures.COVER_ANISON_MEDLEY, "cover")
-    songs = row["メドレー収録曲"].split(" | ")
-    assert len(songs) == 6, songs
+def test_medley_expands_to_one_row_per_song():
+    """曲名が1つに決まらないメドレーは、▼本家様 欄の曲ごとに1行にする（歌企画のCSVと同じ形）。"""
+    rows = extract.build_rows(fixtures.COVER_ANISON_MEDLEY, "cover")
+    songs = [r["曲名"] for r in rows]
+    assert len(rows) == 6, songs
     assert songs[0] == "TVアニメ「ONE PIECE」1000話記念：ウィーアー！"
     assert songs[-1].startswith("「残酷な天使のテーゼ」")
     assert "DAN DAN 心魅かれてく" in songs
     assert all(not s.startswith(("http", "※")) for s in songs), songs
-    assert row["曲名"] == ""
-    assert "曲名が取れない" not in row["要確認理由"]
+    assert [r["曲順"] for r in rows] == [1, 2, 3, 4, 5, 6]
+    assert {r["曲数"] for r in rows} == {6}
+    assert {r["video_id"] for r in rows} == {"JaFgv0Ovz8A"}
+    assert "曲名が取れない" not in rows[0]["要確認理由"]
 
 
 def test_honke_stops_at_honorific_and_skips_notes_and_tagline():
@@ -150,8 +152,9 @@ def test_honke_stops_at_honorific_and_skips_notes_and_tagline():
 
 
 def test_single_cover_is_not_treated_as_medley():
-    row = row_of(fixtures.COVER_SHOUJO_REI, "cover")
-    assert row["メドレー収録曲"] == ""
+    rows = extract.build_rows(fixtures.COVER_SHOUJO_REI, "cover")
+    assert len(rows) == 1
+    assert (rows[0]["曲順"], rows[0]["曲数"]) == (1, 1)
 
 
 def test_music_and_lyrics_label_fills_both_columns():
@@ -184,18 +187,24 @@ def test_illusration_typo_is_matched_as_illustration():
     assert "絵" not in row["要確認理由"]
 
 
-def test_thumbnail_illustrator_is_not_the_illustrator():
-    """◆サムネイラスト はサムネイル担当。絵に入れず、絵が無いものとして要確認にする。"""
+def test_thumbnail_illustrator_counts_as_the_illustrator():
+    """◆サムネイラスト しか無い動画は、その人を絵とする。"""
     row = row_of(fixtures.COVER_THUMBNAIL_ILLUST_ONLY, "cover")
-    assert row["絵"] == "", row["絵"]
-    assert "絵: 該当ラベルが概要欄に無い" in row["要確認理由"]
+    assert row["絵"] == "ねぽ", row["絵"]
+    assert "絵" not in row["要確認理由"]
+
+
+def test_animation_label_counts_as_illustration():
+    """◆Animation も絵に入れる。"""
+    assert extract._match_columns("Animation") == ("絵",)
+    assert extract._match_columns("アニメーション") == ("絵",)
 
 
 def test_cover_with_two_honke_entries_is_not_a_medley():
     """本家様欄が2曲でも、タイトルに「メドレー」が無ければ通常のカバー。"""
-    row = row_of(fixtures.COVER_TWO_HONKE_NOT_MEDLEY, "cover")
-    assert row["メドレー収録曲"] == ""
-    assert row["曲名"] == "夏祭り", row["曲名"]
+    rows = extract.build_rows(fixtures.COVER_TWO_HONKE_NOT_MEDLEY, "cover")
+    assert len(rows) == 1
+    assert rows[0]["曲名"] == "夏祭り", rows[0]["曲名"]
 
 
 def test_every_sample_produces_a_song_name():
