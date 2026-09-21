@@ -231,6 +231,134 @@ def test_missing_credit_labels_are_left_blank_without_a_flag():
     assert row["要確認"] == ""
 
 
+# --- 絵・動画（◆ が無い書き方） ---------------------------------------------
+
+
+def test_loose_credit_formats_without_the_diamond():
+    """メンバーのチャンネルには ◆ の無い書き方がある。ラベル名は暇72の声真似シリーズの実例から。"""
+    assert members.loose_credits("Movie：LAN\nサムネ：暇72\nOP / ED\n") == {"動画": ["LAN"]}
+    assert members.loose_credits("動画：みこと\n絵：すち / こさめ\n") == {"動画": ["みこと"], "絵": ["すち", "こさめ"]}
+    assert members.loose_credits("Illustration by どろ\nMovie by あさこ\n") == {"絵": ["どろ"], "動画": ["あさこ"]}
+    assert members.loose_credits("【Movie】あさこ\n[Illustration] どろ\n") == {"動画": ["あさこ"], "絵": ["どろ"]}
+    assert members.loose_credits("サムネイラスト：ねぽ\n") == {"絵": ["ねぽ"]}
+
+
+def test_loose_credit_with_a_url_after_the_name():
+    """区切りは全角スペース。URLの「https:」の「:」で切らない。"""
+    description = "Illustration　どろ　https://twitter.com/doro_desu2\nMovie　あさこ　https://twitter.com/OO1O83\n"
+    assert members.loose_credits(description) == {"絵": ["どろ"], "動画": ["あさこ"]}
+    assert members.loose_credits("Illust どろ https://twitter.com/x\n") == {"絵": ["どろ"]}
+
+
+def test_loose_credit_label_on_its_own_line_takes_the_next_lines():
+    description = "Illustration\nどろ\nhttps://twitter.com/doro_desu2\n\nMovie\nあさこ\n\nMix\nよしか\n"
+    assert members.loose_credits(description) == {"絵": ["どろ"], "動画": ["あさこ"]}
+
+
+def test_loose_credit_compound_label():
+    assert members.loose_credits("Vocal & Movie & Illust　暇72\n") == {"絵": ["暇72"], "動画": ["暇72"]}
+
+
+def test_loose_credit_does_not_pick_up_ordinary_sentences():
+    for text in (
+        "新作Movieが公開されます！\nmovie is coming soon\nMovie star 好きだった\n",
+        "次のMovie：楽しみ、です\n今日の絵：かわいい！\n",
+        "Illustrationの意味を知りたくて\n動画を見て、絵を描いた。\n",
+        "動画はこちら\nhttps://youtu.be/abc\n",
+    ):
+        assert members.loose_credits(text) == {}, text
+
+
+def test_member_row_uses_the_loose_credits_when_there_is_no_diamond():
+    row = members.member_row(make_video("a", "点.mp4 / 歌ってみた【雨乃こさめ / シクフォニ】", "Movie：LAN\n絵：すち"), "雨乃こさめ", "歌ってみた！")
+    assert (row["絵"], row["動画"]) == ("すち", "LAN")
+
+
+def test_diamond_credits_win_over_loose_ones():
+    description = "◆Illustration\nどろ\n\n※敬称略\n\n絵：だれか\n"
+    row = members.member_row(make_video("a", "曲／歌ってみた【すち】", description), "すち", "歌ってみた")
+    assert row["絵"] == "どろ"
+
+
+# --- ショート（再生リストに入っていないもの） --------------------------------
+
+
+def _http_error(code):
+    import urllib.error
+
+    return urllib.error.HTTPError("http://x", code, "err", {}, None)
+
+
+def test_every_member_has_a_way_to_reach_shorts():
+    """再生リストに入っていないショートも対象。いるま・みことはアップロード全体、他は UUSH のショート一覧。"""
+    for member, spec in fetch_extra.MEMBER_SOURCES.items():
+        assert spec.get("uploads") or spec.get("shorts"), member
+
+
+def test_fetch_member_shorts_uses_the_shorts_playlist_and_skips_known_and_live():
+    channel = "UCsuchi0000000000000000"
+    short = make_video("sh1", "曲名【歌ってみた】 #未完成", "", channel_id=channel)
+    known = make_video("sh2", "既に再生リストにある", "", channel_id=channel)
+    live = make_video("sh3", "配信", "", channel_id=channel)
+    live["liveStreamingDetails"] = {}
+    long_video = make_video("sh4", "長い動画", "", channel_id=channel)
+    long_video["contentDetails"] = {"duration": "PT9M"}
+    videos = {v["id"]: v for v in (short, known, live, long_video)}
+    original = fb.api_get
+    fb.api_get = fake_api({"UUSH" + channel[2:]: ["sh1", "sh2", "sh3", "sh4"]}, videos)
+    try:
+        found = fetch_extra.fetch_member_shorts("key", channel, 10, "snippet", {"sh2"})
+    finally:
+        fb.api_get = original
+    assert [v["id"] for v in found] == ["sh1"]
+
+
+def test_fetch_member_shorts_falls_back_to_uploads_when_the_shorts_playlist_is_missing():
+    channel = "UCsuchi0000000000000000"
+    short = make_video("sh1", "曲名【歌ってみた】", "", channel_id=channel)
+    long_video = make_video("sh4", "長い動画", "", channel_id=channel)
+    long_video["contentDetails"] = {"duration": "PT9M"}
+    base = fake_api({"UU" + channel[2:]: ["sh1", "sh4"]}, {"sh1": short, "sh4": long_video})
+
+    def api_get(api_key, path, **params):
+        if params.get("playlistId", "").startswith("UUSH"):
+            raise _http_error(404)
+        return base(api_key, path, **params)
+
+    original = fb.api_get
+    fb.api_get = api_get
+    try:
+        found = fetch_extra.fetch_member_shorts("key", channel, 10, "snippet", set())
+    finally:
+        fb.api_get = original
+    assert [v["id"] for v in found] == ["sh1"]
+
+
+def test_collect_member_videos_adds_shorts_outside_the_playlists():
+    channel = "UCsuchi0000000000000000"
+    in_playlist = make_video("p1", "【絵師が】踊／歌ってみた【すち】", "x", channel_id=channel)
+    in_playlist["contentDetails"] = {"duration": "PT4M"}
+    short = make_video("sh1", "夜に駆ける歌ってみた #夜に駆ける", "", channel_id=channel)
+    videos = {"p1": in_playlist, "sh1": short}
+    playlists = {"PLsuchi": ["p1"], "UUSH" + channel[2:]: ["p1", "sh1"]}
+    base = fake_api(playlists, videos)
+
+    def api_get(api_key, path, **params):
+        if path == "playlists":
+            return {"items": [{"id": "PLsuchi", "snippet": {"title": "歌ってみた"}, "contentDetails": {"itemCount": 1}}]}
+        return base(api_key, path, **params)
+
+    original = fb.api_get
+    fb.api_get = api_get
+    try:
+        collected, stats = fetch_extra.collect_member_videos("key", channel, fetch_extra.MEMBER_SOURCES["すち"], 300, 500)
+    finally:
+        fb.api_get = original
+    assert [(v["id"], p) for v, p in collected] == [("p1", "歌ってみた"), ("sh1", None)]
+    rows = [members.member_row(v, "すち", p) for v, p in collected]
+    assert rows[1]["曲名"] == "夜に駆ける" and rows[1]["ショート"] == "はい"
+
+
 # --- fetch_extra member-songs ---------------------------------------------
 
 
@@ -260,7 +388,11 @@ def test_run_member_songs_reads_playlists_and_non_live_uploads():
         "PLsuchi": ["s1"],
         "PLillma": ["i1"],
         "UU" + ids["illma"][2:]: ["i1", "i2", "i3", "i4"],
+        "UUSH" + ids["channel"][2:]: ["sh1"],
     }
+    # すちの再生リスト外のショート。長さは疑似動画の既定（45秒）でショート扱い。
+    suchi_short = make_video("sh1", "夜に駆ける歌ってみた #夜に駆ける", "", channel_id=ids["channel"])
+    videos["sh1"] = suchi_short
     listing = {
         ids["channel"]: [{"id": "PLsuchi", "snippet": {"title": "歌ってみた"}, "contentDetails": {"itemCount": 1}}],
         ids["illma"]: [{"id": "PLillma", "snippet": {"title": "Original (Solo)"}, "contentDetails": {"itemCount": 1}}],
@@ -288,6 +420,7 @@ def test_run_member_songs_reads_playlists_and_non_live_uploads():
     by_id = {r["video_id"]: r for r in rows}
     assert list(rows[0]) == members.MEMBER_FIELDS
     assert by_id["s1"]["曲名"] == "踊" and by_id["s1"]["メンバー"] == "すち"
+    assert by_id["sh1"]["曲名"] == "夜に駆ける" and by_id["sh1"]["再生リスト"] == "", "再生リスト外のショートも拾う"
     assert by_id["i1"]["再生リスト"] == "Original (Solo)" and by_id["i1"]["category"] == "original"
     assert by_id["i2"]["曲名"] == "未完成婚姻論" and by_id["i2"]["曲名の出所"] == "ハッシュタグ"
     assert by_id["i2"]["再生リスト"] == ""

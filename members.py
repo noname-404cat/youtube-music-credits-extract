@@ -5,7 +5,8 @@
 
   - 曲名: タイトルから。ショートはハッシュタグから（ショートは再生リストに入っていないものがある）。
   - 歌唱者: タイトルに出るメンバー名。二人以上で歌う動画があるため。無ければチャンネルの持ち主。
-  - 絵・動画: 概要欄に ◆ラベル があれば extract.py と同じ規則で取る。無ければ空。
+  - 絵・動画: 概要欄の ◆ラベル、無ければ ◆ が付いていない書き方（「Movie：LAN」「Illust　どろ」
+    「Illustration by どろ」、ラベルだけの行の次の行）からも拾う。無ければ空。
 """
 
 import re
@@ -52,6 +53,96 @@ GENERIC_TAGS = {
     "両声類", "多声類", "高音厨", "低音厨", "声真似", "tiktok", "tiktokbest",
     "anime", "アニメ", "漫画", "シクフォニ", "しくふぉに", "ボカロ", "ボカロ曲",
 }
+
+
+# --------------------------------------------------------------------------
+# 絵・動画の担当（◆ が無い書き方も含める）
+# --------------------------------------------------------------------------
+
+_BULLETS = "◆◇■□●○◎▽▷・-*＊ 　"
+_URL = re.compile(r"https?://\S+")
+# ラベルと値の区切り。URLの「https:」の「:」は区切りにしない。
+_LABEL_SEPARATOR = re.compile(r"[：　]|:(?!//)")
+_SENTENCE = re.compile(r"[。！？!?、]")
+# 行頭の語がこの語だけでできているとき、その行はラベル。文章の途中の「movie」を拾わないため。
+_LABEL_VOCAB = re.compile(
+    r"(?:vocal|mix|movie|video|illust[a-z]*|i{1,3}l{1,3}ust[a-z]*|illustrator|animation|art|design|character|main|sub|and|by|mv"
+    r"|動画|絵|イラスト|イラストレーター|作画|アニメ(?:ション)?|映像|サムネイラスト)+"
+)
+_SINGLE_WORD_LABELS = {"movie", "video", "illust", "illustration", "illustrator", "animation", "art", "mv", "動画", "絵", "イラスト", "映像", "作画"}
+
+
+def _split_label(line):
+    """行を (ラベル, 値) に分ける。区切りは「：」「:」全角スペース、「by」、または単語1つのラベルのあとの半角スペース。"""
+    s = line.strip().lstrip(_BULLETS).strip()
+    m = re.match(r"^[【\[(（]([^】\])）]{1,30})[】\])）]\s*(.*)$", s)
+    if m:
+        return m.group(1), m.group(2)
+    sep = _LABEL_SEPARATOR.search(s)
+    if sep and 0 < len(s[: sep.start()].strip()) <= 30:
+        return s[: sep.start()].strip(), s[sep.end():].strip()
+    m = re.match(r"^(\S+)\s+by\s+(.+)$", s, re.IGNORECASE)
+    if m:
+        return m.group(1), m.group(2)
+    head, _, tail = s.partition(" ")
+    if head.lower() in _SINGLE_WORD_LABELS and _URL.search(tail):
+        return head, tail
+    return s, ""
+
+
+def _label_columns(head):
+    """head がラベルなら、入る列（絵・動画）を返す。文章の一部なら空。"""
+    if not head or len(head) > 30 or _SENTENCE.search(head):
+        return ()
+    normalized = extract._normalize_label(head)
+    if not _LABEL_VOCAB.fullmatch(normalized):
+        return ()
+    if normalized == "絵":  # 本体の◆ラベルには「絵」単体は無いが、メンバーのチャンネルにはある
+        return ("絵",)
+    return tuple(c for c in extract._match_columns(head) if c in ("絵", "動画"))
+
+
+def _people(text):
+    """値の文字列から人名を取り出す。URLは捨て、全角スペース・括弧の手前までを名前とする。"""
+    names = []
+    for line in text.split("\n"):
+        name = extract._clean_name(_URL.sub("", line))
+        for part in re.split(r"\s*[/／]\s*", name):
+            if part.strip() and part.strip() not in names:
+                names.append(part.strip())
+    return names
+
+
+def loose_credits(description):
+    """概要欄から絵・動画の担当を拾う。{列: [名前]}。◆ の有無を問わない。
+
+    ラベルと名前が同じ行にあるもの（Movie：LAN）と、ラベルだけの行の次の行に名前があるものを見る。
+    """
+    lines = extract.strip_invisible(description).split("\n")
+    found = {}
+    i = 0
+    while i < len(lines):
+        head, value = _split_label(lines[i])
+        columns = _label_columns(head)
+        if not columns:
+            i += 1
+            continue
+        values = [value] if value else []
+        j = i + 1
+        if not value:
+            # ラベルだけの行: 次の空行・区切り線・別のラベルまでの数行が名前
+            while j < len(lines) and len(values) < 4:
+                nxt = lines[j].strip()
+                if not nxt or extract._DIVIDER.match(nxt) or _label_columns(_split_label(nxt)[0]):
+                    break
+                values.append(nxt)
+                j += 1
+        names = _people("\n".join(values))
+        if 0 < len(names) <= extract._MAX_VALUE_LINES and all(len(n) <= extract._MAX_NAME_LEN for n in names):
+            for column in columns:
+                found.setdefault(column, names)
+        i = max(j, i + 1)
+    return found
 
 
 def parse_duration(iso):
@@ -241,10 +332,14 @@ def member_row(video, member, playlist=None):
         notes.append(f"共演者の可能性: {' / '.join(guests)}")
 
     credits = extract.credits_by_column(description)
+    loose = loose_credits(description)
     values = {}
     for column in ("絵", "動画"):
         entry = credits.get(column)
-        values[column] = " / ".join(entry["names"]) if entry and not entry["suspect"] else ""
+        if entry and not entry["suspect"]:
+            values[column] = " / ".join(entry["names"])
+        else:
+            values[column] = " / ".join(loose.get(column, []))
 
     return {
         "メンバー": member,
