@@ -78,7 +78,8 @@ def test_default_singers_are_always_flagged():
     """表記が無いときの「全員」は推定であり、黙って確定させない。"""
     row = row_of(fixtures.COVER_SHOUJO_REI, "cover")
     assert row["歌ってる人"] == "暇72 / 雨乃こさめ / いるま / LAN / すち / みこと"
-    assert "タイトルに歌唱者の表記が無く全員と仮置き" in row["要確認理由"]
+    assert row["歌唱者は推定"] == "推定"
+    assert "タイトルに歌唱者の表記が無く" not in row["要確認理由"]
 
 
 def test_cover_never_guesses_lyricist_from_original_artist():
@@ -103,6 +104,31 @@ def test_affiliation_in_parentheses_is_dropped():
 def test_published_at_converts_to_jst():
     assert extract.to_jst_date("2026-08-31T10:00:06Z") == "2026-08-31"
     assert extract.to_jst_date("2026-08-31T15:30:00Z") == "2026-09-01"
+
+
+def test_cover_without_lyricist_label_is_not_flagged():
+    """カバーは作詞作曲が原曲側にあり、概要欄に無いのが通常。要確認にしない。"""
+    row = row_of(fixtures.COVER_SHOUJO_REI, "cover")
+    assert "作詞: 該当ラベルが概要欄に無い" not in row["要確認理由"]
+    assert "作曲: 該当ラベルが概要欄に無い" not in row["要確認理由"]
+
+
+def test_medley_lists_songs_from_honke_section():
+    """曲名が1つに決まらないメドレーは、▼本家様 欄の曲を表記のまま順に出す。"""
+    row = row_of(fixtures.COVER_ANISON_MEDLEY, "cover")
+    songs = row["メドレー収録曲"].split(" | ")
+    assert len(songs) == 6, songs
+    assert songs[0] == "TVアニメ「ONE PIECE」1000話記念：ウィーアー！"
+    assert songs[-1].startswith("「残酷な天使のテーゼ」")
+    assert "DAN DAN 心魅かれてく" in songs
+    assert all(not s.startswith(("http", "※")) for s in songs), songs
+    assert row["曲名"] == ""
+    assert "曲名が取れない" not in row["要確認理由"]
+
+
+def test_single_cover_is_not_treated_as_medley():
+    row = row_of(fixtures.COVER_SHOUJO_REI, "cover")
+    assert row["メドレー収録曲"] == ""
 
 
 def test_every_sample_produces_a_song_name():

@@ -345,3 +345,60 @@ https://x.com/hima72_25
 COVERS = [COVER_SHOUJO_REI, COVER_KYOURAN]
 ORIGINALS = [ORIGINAL_SIX_NATION, ORIGINAL_MEDLEY, ORIGINAL_T4XI, ORIGINAL_APRIL_FOOL]
 ALL_SAMPLES = [(v, "cover") for v in COVERS] + [(v, "original") for v in ORIGINALS]
+
+
+# メドレー動画。曲名は1つに決まらず、▼本家様 欄に曲が並ぶ（実物は26曲。ここでは表記の型が違う6曲だけ残した）。
+# publishedAt は取得していないためダミー（テストは日付を見ない）。ALL_SAMPLES には入れない。
+COVER_ANISON_MEDLEY = {
+    "id": "JaFgv0Ovz8A",
+    "snippet": {
+        "title": "【アニソン組曲】超有名アニソン勝手に選んでメドレーにしたら神過ぎた件ｗｗｗｗｗｗ【アニソンメドレー】【Cover】【シクフォニ】",
+        "publishedAt": "2000-01-01T00:00:00Z",
+        "channelTitle": "シクフォニ【SIXFONIA】",
+        "description": """＿＿＿少年よ 神話になれ
+
+▼TikTokメドレー　2022Ver.
+https://youtu.be/qobAdZm39Rc
+
+▼Cover Song Playlist
+https://www.youtube.com/playlist?list=PLppXIlUC-oPw8uCDchVYal9ibApaYP-4R 
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+
+▼本家様
+
+TVアニメ「ONE PIECE」1000話記念：ウィーアー！
+https://youtu.be/dM7x1PNZDo0
+
+デジモンアドベンチャー オープニング映像 / 和田光司「Butter-Fly」
+https://youtu.be/32JTFI0alPk
+
+めざせポケモンマスター
+https://youtu.be/E_BsL8_cFnE
+
+LiSA『紅蓮華』-MUSiC CLiP-（アニメ「鬼滅の刃」竈門炭治郎 立志編 オープニングテーマ）
+https://youtu.be/x1FV6IrjZCY
+
+DAN DAN 心魅かれてく
+https://field-of-view.jp/
+※正式なYoutubeリンクが見つからなかったため、公式HPを記載させていただきます。
+
+「残酷な天使のテーゼ」MUSIC VIDEO（HDver.）/Zankoku na Tenshi no Te-ze“The Cruel Angel's Thesis”
+https://youtu.be/o6wtDPVkKqI
+
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+
+運命を掴み取る最強の6人による2.5次元タレントグループ
+
+◆Arrange
+show　( https://x.com/boogie_d_box )
+
+◆Illustration
+灰色ルト　( https://x.com/luto_gray000 )
+
+◆Movie
+骨付きくぁるび　( https://x.com/SAN_Q_SAN )
+
+※敬称略
+""",
+    },
+}

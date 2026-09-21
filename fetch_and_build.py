@@ -20,6 +20,7 @@ import urllib.request
 import extract
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
+CHANNEL_ID = "UCGMG8BNfA8gsH9Rn_d_yW2A"
 
 PLAYLISTS = {
     "cover": "PLppXIlUC-oPw8uCDchVYal9ibApaYP-4R",
@@ -87,13 +88,16 @@ def collect(api_key):
             category_of[video_id] = category
             order.append(video_id)
 
-    videos = fetch_videos(api_key, order)
-    found = {v["id"] for v in videos}
+    fetched = fetch_videos(api_key, order)
+    found = {v["id"] for v in fetched}
     missing = [v for v in order if v not in found]
-    return videos, category_of, per_playlist, missing
+    # 再生リストにはメンバー個人チャンネルの動画も入る。シクフォニのチャンネルに上がった動画に限る
+    videos = [v for v in fetched if v["snippet"].get("channelId") == CHANNEL_ID]
+    foreign = [v for v in fetched if v["snippet"].get("channelId") != CHANNEL_ID]
+    return videos, category_of, per_playlist, missing, foreign
 
 
-def audit(videos, category_of, per_playlist, missing, rows):
+def audit(videos, category_of, per_playlist, missing, rows, foreign=()):
     """抽出はせず「どういう書式が何本あるか」だけを数える。ここを見て正規表現を直す。"""
     print()
     print("=" * 78)
@@ -106,6 +110,13 @@ def audit(videos, category_of, per_playlist, missing, rows):
     print(f"  両方に登録: {len(overlap)} 本  {sorted(overlap) if overlap else ''}")
     if missing:
         print(f"  取得できず(削除/非公開): {len(missing)} 本  {missing}")
+    print(f"  他チャンネルのため除外: {len(foreign)} 本 / 採用: {len(videos)} 本")
+    for channel, count in collections.Counter(
+        v["snippet"].get("channelTitle", "") for v in foreign
+    ).most_common():
+        print(f"    {count:4d}  {channel}")
+    years = collections.Counter(r["投稿日"][:4] for r in rows)
+    print("  投稿年: " + "  ".join(f"{y}={n}" for y, n in sorted(years.items())))
 
     labels = collections.Counter()
     honorific = collections.Counter()
@@ -129,8 +140,10 @@ def audit(videos, category_of, per_playlist, missing, rows):
     for marker, count in honorific.most_common():
         print(f"    {count:4d}  {marker}")
 
-    unresolved = [r for r in rows if not r["曲名"]]
+    medleys = [r for r in rows if not r["曲名"] and r["メドレー収録曲"]]
     print()
+    print(f"  メドレー（曲名は空・収録曲を抽出）: {len(medleys)} 本")
+    unresolved = [r for r in rows if not r["曲名"] and not r["メドレー収録曲"]]
     print(f"  曲名が取れなかった動画: {len(unresolved)} 本")
     for row in unresolved:
         print(f"    {row['video_id']}  {row['タイトル']}")
@@ -167,9 +180,11 @@ def main():
     args = parser.parse_args()
 
     api_key = get_api_key()
-    videos, category_of, per_playlist, missing = collect(api_key)
+    videos, category_of, per_playlist, missing, foreign = collect(api_key)
 
     merged = load_existing(args.out)
+    for video in foreign:
+        merged.pop(video["id"], None)  # 以前の実行で入れた他チャンネルの行を消す
     for video in videos:
         row = extract.build_row(video, category_of[video["id"]])
         merged[row["video_id"]] = row
@@ -179,7 +194,7 @@ def main():
     print(f"{len(rows)} 行を {args.out} に書き出した（今回の取得: {len(videos)} 本）")
 
     if not args.no_audit:
-        audit(videos, category_of, per_playlist, missing, rows)
+        audit(videos, category_of, per_playlist, missing, rows, foreign)
 
 
 if __name__ == "__main__":
