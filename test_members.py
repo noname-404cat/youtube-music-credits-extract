@@ -449,6 +449,47 @@ def test_category_from_hashtags_and_no_flag_for_a_hashtag_song():
     assert members.hashtag_category("", "#オリジナル曲 #新曲") == "original"
 
 
+# --- 2回目の実行（ハッシュタグ由来の曲名 765本）で見つけた曲名でないタグ ------
+
+
+def test_people_topics_and_artists_are_not_song_names():
+    not_songs = [
+        "しろせんせー", "キルシュトルテ", "ゲーム実況", "ニキ", "みぃ太軍", "18号", "弐十",
+        "マリカ", "おみくじ", "呪術廻戦", "沖田総悟", "おじさん構文", "合唱", "アカペラ", "方言", "女声",
+        "なとり", "ピノキオピー", "キタニタツヤ", "オリジナル曲", "シクフォ二",
+    ]
+    for tag in not_songs:
+        assert members._is_generic(tag), tag
+
+
+def test_songs_that_look_like_topics_stay_songs():
+    """繰り返し出るが、曲名のもの。ご指定の5つに加え、実データで曲と判断したもの。"""
+    songs = [
+        "irisout", "人マニア", "テトリス", "可愛くてごめん", "モエチャッカファイア",
+        "ドレミの歌", "唱", "ライラック", "はいよろこんで", "混沌ブギ", "ヤラララ", "爆裂愛してる", "ウワサのあの子",
+        "プロポーズ", "なぁぜなぁぜ", "リードコントロール", "モニタリング", "アイドル", "最酊",
+    ]
+    for tag in songs:
+        assert not members._is_generic(tag), tag
+
+
+def test_a_short_with_only_person_and_topic_tags_has_no_song():
+    """暇72のショートで最も多かった誤り（しろせんせー56本、キルシュトルテ40本、ゲーム実況30本）。"""
+    for title, description in (
+        ("みんなは流石に履くよね？ #shorts", "#shorts #しろせんせー #暇72 #シクフォニ"),
+        ("VTuberの裏の姿がヤバイ。 #shorts", "#shorts #キルシュトルテ #暇72"),
+        ("なんの話してるの？ #shorts", "#shorts #ゲーム実況 #暇72"),
+    ):
+        row = members.member_row(make_video("a", title, description), "暇72", None)
+        assert row["曲名"] == "", (title, row["曲名"])
+
+
+def test_bracket_naming_a_member_or_the_group_is_not_a_song():
+    assert members.bracket_song("ラストが神すぎる絵しりとり【シクフォニ×ハンドレッドノート】") is None
+    assert members.bracket_song("曲名／歌ってみた【暇72×すち】") is None
+    assert members.bracket_song("夏！花火！【夏恋センセイション】【マカロニえんぴつ】") == "夏恋センセイション"
+
+
 # --- fetch_extra member-songs ---------------------------------------------
 
 

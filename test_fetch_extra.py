@@ -172,17 +172,29 @@ def test_shorts_song_takes_the_title_bracket():
 def test_shorts_song_ignores_brackets_that_are_not_songs():
     """【3D】【アニメ】【シクフォニ×…】は曲名ではない。"""
     song, note = fetch_extra.shorts_song("ルールを守って剣と盾チャレンジ【3D】")
-    assert song is None and "曲名が無い" in note
+    assert song is None and "曲名を判定できない" in note
     song, note = fetch_extra.shorts_song("ラストが神すぎる絵しりとり【シクフォニ×ハンドレッドノート】")
     assert song is None, song
     song, note = fetch_extra.shorts_song("【アニメ】オタクくん～見てる？電話に...【漫画】")
     assert song is None, song
 
 
-def test_shorts_song_flags_a_title_with_two_candidates():
-    song, note = fetch_extra.shorts_song("【青と夏】を歌ったあとに【夏祭り】")
-    assert song == "夏祭り"
-    assert "【】が複数" in note
+def test_shorts_song_takes_the_first_of_a_trailing_pair_of_brackets():
+    """【曲名】【原曲アーティスト】の形。実データで、アーティスト（マカロニえんぴつ）を採っていた。"""
+    title = "【最新TikTokトレンド】夏！花火！浴衣！祭り！！！！！！！【夏恋センセイション】【マカロニえんぴつ】　#shorts"
+    assert fetch_extra.shorts_song(title) == ("夏恋センセイション", None)
+    # 煽りの【】が先頭にあり、曲名が末尾の1つだけの形
+    assert fetch_extra.shorts_song("【方言】あれ？可愛くなりすぎてもうたかこれ...【かがみ】") == ("かがみ", None)
+    assert fetch_extra.shorts_song("【方言】これが俺たちの逆襲じゃ！【最上級にかわいいの！】") == ("最上級にかわいいの！", None)
+
+
+def test_shorts_song_falls_back_to_the_description_hashtags():
+    """タイトルに【】が無くても、概要欄のハッシュタグに曲名がある（島のうた）。"""
+    description = "#shorts #シクフォニ #vtuber #歌ってみた #島のうた #ちいかわ #セイレーン  \n××× 毎日更新＿＿＿現在473日目！ ×××"
+    assert fetch_extra.shorts_song("高音厨3人で島のうた (セイレーンver.)歌ってみた", description) == ("島のうた", None)
+    # 曲名の見当が全く付かないものは空のまま（メドレー・企画）
+    assert fetch_extra.shorts_song("あーあ！ころしちゃった！", "#shorts #シクフォニ")[0] is None
+    assert fetch_extra.shorts_song("TikTokバズ曲メドレー作ってみた【3D】", "#tiktokメドレー #tiktokbest #バズ曲")[0] is None
 
 
 def test_shorts_row_has_song_and_basics():

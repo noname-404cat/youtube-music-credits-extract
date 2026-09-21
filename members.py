@@ -59,6 +59,19 @@ GENERIC_TAGS = {
     # 曲ではない題材（実データの監査で見つけたもの）
     "イラスト", "描いてみた", "メイキング", "マイクラ", "minecraft", "pokemon", "ポケモン",
     "鬼滅の刃", "銀魂", "dance", "mix", "music", "ado", "3d", "mv", "live2d", "雑学",
+    # 2回目の実行の監査（ハッシュタグ由来の曲名 765本）で見つけた、曲名ではないもの
+    # 人物・共演者
+    "しろせんせー", "キルシュトルテ", "ニキ", "みぃ太軍", "18号", "よつばくん", "弐十", "ぷりっつ", "さんしあ", "もるでお",
+    # 企画・題材（ゲーム・アニメ・キャラ・ネタ）
+    "ゲーム実況", "マリカ", "switch2", "oncehuman", "めっちゃカメレオン", "おみくじ", "あつまれどうぶつの森",
+    "猫ミーム", "しぬ界隈", "おじさん構文", "スズキタゴサク構文", "ひき肉です", "geeチャレンジ", "セルフ解説",
+    "英語", "trend", "doodle", "piano", "illustration", "アニメーション", "呪術廻戦", "チェンソーマン",
+    "chainsawman", "ヒプマイ", "沖田総悟", "甘露寺蜜璃", "伊黒小芭内", "推しの子", "超かぐや姫",
+    # 歌い方・形式
+    "合唱", "アカペラ", "方言", "女声", "ラップ", "日本語ラップ", "中国語ラップ", "配信者", "フクロウ", "正体を明かす",
+    "新人歌い手", "新人歌い手グループ", "いれいす", "超最強", "オリジナル曲", "オリ曲", "シクフォ二",
+    # アーティスト名（曲名ではなく原曲側の名義）
+    "キタニタツヤ", "skyhi", "なとり", "ピノキオピー", "mrsgreenapple", "初音ミク",
 }
 # メンバー名のタグは曲名ではない（#暇72 #雨乃こさめ …）
 GENERIC_TAGS |= {alias.lower() for alias in ALIASES}
@@ -245,6 +258,11 @@ def hashtag_category(*texts):
     return None
 
 
+def _names_a_person(text):
+    """【シクフォニ×ハンドレッドノート】【暇72×すち】のように、メンバー・グループの名前を含む括弧。"""
+    return any(is_member_name(token) for token in _TOKEN_SPLIT.split(text) if token)
+
+
 def bracket_song(title):
     """タイトル末尾の【】から曲名を取る。「…【曲名】#shorts」「…【曲名】【原曲アーティスト】」の形。
 
@@ -256,7 +274,7 @@ def bracket_song(title):
     if not trailing:
         return None
     names = [b.strip() for b in re.findall(r"【([^【】]*)】", trailing.group(0))]
-    names = [n for n in names if n and not _is_generic(n)]
+    names = [n for n in names if n and not _is_generic(n) and not _names_a_person(n)]
     return names[0] if names else None
 
 
