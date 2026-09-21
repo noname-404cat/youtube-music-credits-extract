@@ -10,6 +10,7 @@
 """
 
 import re
+import unicodedata
 
 import extract
 
@@ -34,25 +35,46 @@ _DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
 _TOKEN_SPLIT = re.compile(r"[／/×＆&,、・･\s【】\[\]()（）『』「」“”\"'‘’#＃]+")
 _LEAD = re.compile(r"^(?:\s*【[^【】]*】)+\s*")
 _TRAIL = re.compile(r"(?:\s*【[^【】]*】)+\s*$")
-_SPLIT = re.compile(r"\s*／\s*|\s+/\s+")
+# 半角の / は、前後が空白か、日本語に接しているときだけ区切りにする（1/2 などを切らない）
+_SPLIT = re.compile(r"\s*／\s*|\s+/\s+|(?<=[^\x00-\x7f])/|/(?=[^\x00-\x7f])")
 _COVER_TAIL = re.compile(r"\s*(?:歌ってみた|Covered? by\s*\S+|Cover\b.*|[(（]cover[)）])\s*$", re.IGNORECASE)
 _SEGMENT_END = re.compile(r"\s*【|\s*\[|\s+Covered? by|\s+Cover\b|\s*[(（]cover[)）]", re.IGNORECASE)
 _OFFICIAL = re.compile(r"^\s*(?P<artist>.+?)\s*[-‐－ー–—]\s*(?P<song>.+?)\s*\[Official", re.IGNORECASE)
 _QUOTED = re.compile(r'[『“”"]([^『』“”"]+)[』“”"]')
 _PAIR_QUOTE = re.compile(r"^['\"‘’“”](.+?)['\"‘’“”](?=\s|$)")
-_ORIGINAL_MARK = re.compile(r"\[Official|【MV】|【Official", re.IGNORECASE)
+_ORIGINAL_MARK = re.compile(r"\[Official|【MV】|【Official|新曲", re.IGNORECASE)
 _COVER_MARK = re.compile(r"【Cover】|Covered? by|Cover\b|[(（]cover[)）]|歌ってみた|声真似", re.IGNORECASE)
+# タイトルの末尾などに付くハッシュタグ（曲名の解析では除く）
+_TITLE_HASHTAG = re.compile(r"[#＃][^\s#＃　】\])）」』]+")
 # 【#多声類】のように括弧に入ったタグの、閉じ括弧を含めない
 _HASHTAG = re.compile(r"[#＃]([^\s#＃　】\]）)」』]+)")
 
 # ハッシュタグのうち、曲名ではないもの（小文字で比べる）。実データで見つけたら足す。
 GENERIC_TAGS = {
-    "歌ってみた", "歌ってみた合唱", "歌い手", "歌", "カバー", "cover", "歌ってみたshorts",
-    "shorts", "short", "ショート", "shortvideo", "fyp", "おすすめ", "バズ", "バズ曲", "トレンド",
+    "歌ってみた", "歌ってみた合唱", "歌い手", "歌", "カバー", "cover", "歌ってみたshorts", "替え歌",
+    "shorts", "short", "shortvideo", "ショート", "fyp", "おすすめ", "バズ", "バズ曲", "トレンド",
     "vtuber", "vsinger", "新人vtuber", "男性vtuber", "vチューバー",
     "両声類", "多声類", "高音厨", "低音厨", "声真似", "tiktok", "tiktokbest",
-    "anime", "アニメ", "漫画", "シクフォニ", "しくふぉに", "ボカロ", "ボカロ曲",
+    "anime", "アニメ", "animation", "漫画", "シクフォニ", "しくふぉに", "ボカロ", "ボカロ曲",
+    # 曲ではない題材（実データの監査で見つけたもの）
+    "イラスト", "描いてみた", "メイキング", "マイクラ", "minecraft", "pokemon", "ポケモン",
+    "鬼滅の刃", "銀魂", "dance", "mix", "music", "ado", "3d", "mv", "live2d", "雑学",
 }
+# メンバー名のタグは曲名ではない（#暇72 #雨乃こさめ …）
+GENERIC_TAGS |= {alias.lower() for alias in ALIASES}
+# タグが shorts / シクフォニ で始まるものは全部（shortsvideo shortsfeed シクフォニ3D …）
+_GENERIC_PREFIXES = ("shorts", "シクフォニ", "しくふぉに")
+# チャンネルの持ち主・メンバー・グループの名前。これらは曲名ではない。
+_GROUP_NAMES = {"シクフォニ", "しくふぉに", "sixfonia"}
+
+
+def _norm(text):
+    return unicodedata.normalize("NFKC", text).lower()
+# ハッシュタグを曲名にしてはいけない動画（イラストのメイキング等）
+_NON_SONG_TITLE = re.compile(r"描いてみた|メイキング|サムネ描|【雑学】")
+# タグから分かるカバー/オリジナル
+_COVER_TAGS = {"歌ってみた", "歌ってみたshorts", "歌ってみた合唱", "cover", "カバー", "替え歌"}
+_ORIGINAL_TAGS = {"オリジナル曲", "オリ曲", "original", "originalsong", "mv"}
 
 
 # --------------------------------------------------------------------------
@@ -183,13 +205,59 @@ def title_category(title):
     return None
 
 
+# ひらがな1文字（「の」など）は曲名ではなく、タイトルの切れ端
+_PARTICLE = re.compile(r"[ぁ-ん]")
+_GENERIC_NORMALIZED = {_norm(tag) for tag in GENERIC_TAGS}
+_MEMBER_NAMES_NORMALIZED = {_norm(name) for name in ALIASES} | _GROUP_NAMES
+
+
+def _is_generic(tag):
+    normalized = _norm(tag)
+    return (
+        normalized in _GENERIC_NORMALIZED
+        or normalized in _MEMBER_NAMES_NORMALIZED
+        or normalized.startswith(tuple(_norm(p) for p in _GENERIC_PREFIXES))
+        or "メドレー" in tag
+    )
+
+
+def is_member_name(text):
+    """メンバー名・グループ名そのもの。曲名として採ってはいけない。"""
+    return _norm(text).strip() in _MEMBER_NAMES_NORMALIZED
+
+
 def song_from_hashtags(*texts):
     """最初の、曲名ではないハッシュタグ。ショートは曲名がここに入る。"""
     for text in texts:
         for tag in _HASHTAG.findall(extract.strip_invisible(text)):
-            if tag.lower() not in GENERIC_TAGS and "メドレー" not in tag:
+            if not _is_generic(tag):
                 return tag
     return None
+
+
+def hashtag_category(*texts):
+    """ハッシュタグ（#歌ってみた #cover #オリジナル曲 …）から分かるカバー/オリジナル。"""
+    tags = {tag.lower() for text in texts for tag in _HASHTAG.findall(extract.strip_invisible(text))}
+    if tags & _ORIGINAL_TAGS:
+        return "original"
+    if tags & _COVER_TAGS:
+        return "cover"
+    return None
+
+
+def bracket_song(title):
+    """タイトル末尾の【】から曲名を取る。「…【曲名】#shorts」「…【曲名】【原曲アーティスト】」の形。
+
+    末尾に【】が続くときは最初のもの（2つ目は原曲アーティスト）。汎用の語（歌ってみた・3D・メンバー名）は除く。
+    ハッシュタグから曲名が取れないときの予備で、当たる形が限られるので使うのはショートだけ。
+    """
+    text = _TITLE_HASHTAG.sub("", extract.strip_invisible(title)).strip()
+    trailing = _TRAIL.search(text)
+    if not trailing:
+        return None
+    names = [b.strip() for b in re.findall(r"【([^【】]*)】", trailing.group(0))]
+    names = [n for n in names if n and not _is_generic(n)]
+    return names[0] if names else None
 
 
 def parse_title(title):
@@ -197,18 +265,18 @@ def parse_title(title):
 
     song_like は「曲のタイトルらしい」形（区切りの／・カバーの表記・Official 等）が見えたかどうか。
     """
-    title = extract.strip_invisible(title).strip()
-    result = {"song": None, "song_like": False, "note": None}
+    title = _TITLE_HASHTAG.sub("", extract.strip_invisible(title)).strip()
+    result = {"song": None, "song_like": False, "note": None, "split": False}
 
     official = _OFFICIAL.match(title)
     if official:
-        result.update(song=official.group("song").strip(), song_like=True)
+        result.update(song=official.group("song").strip(), song_like=True, split=True)
         return result
 
     body = title
     # 「『曲名』歌ってみた」「”曲名”歌ってみた」の形（声真似シリーズ）
     quoted = _QUOTED.search(title)
-    if quoted and "歌ってみた" in title:
+    if quoted and ("歌ってみた" in title or "新曲" in title):
         body = quoted.group(1).strip()
         result["song_like"] = True
     else:
@@ -221,6 +289,7 @@ def parse_title(title):
     left = parts[0]
     if len(parts) > 1:
         result["song_like"] = True
+        result["split"] = True
     left = _COVER_TAIL.sub("", left).strip()
     left = _PAIR_QUOTE.sub(r"\1", left).strip()
     if title_category(title):
@@ -257,13 +326,14 @@ def guest_candidates(title):
 
     共演者か、原曲側の名義か区別が付かないので、要確認の材料として返す。
     """
-    text = _LEAD.sub("", extract.strip_invisible(title), count=1)
+    text = _LEAD.sub("", _TITLE_HASHTAG.sub("", extract.strip_invisible(title)), count=1)
     m = _SPLIT.search(text)
     if not m:
         return []
     segment = _SEGMENT_END.split(text[m.end():], maxsplit=1)[0]
     parts = [p.strip() for p in re.split(r"\s*[×＆&]\s*", segment) if p.strip()]
-    if len(parts) < 2:
+    # メンバーが並びに入っているときだけ。LANの「曲 / DECO*27×堀江晶太 Cover」は原曲側の名義なので共演者ではない。
+    if len(parts) < 2 or not any(_alias(p) for p in parts):
         return []
     return [p for p in parts if not _alias(p)]
 
@@ -293,16 +363,31 @@ MEMBER_FIELDS = [
 
 
 def resolve_song(title, description, short, from_playlist):
-    """(曲名, 出所, 注記) を返す。曲名が None なら取れなかった。
+    """(曲名, 出所, 注記) を返す。曲名が None なら取れなかった。曲名がメンバー名・グループ名になったものは採らない。"""
+    song, source, note = _resolve_song(title, description, short, from_playlist)
+    if song and (is_member_name(song) or _PARTICLE.fullmatch(song)):
+        return None, None, "曲名を判定できない"
+    return song, source, note
+
+
+def _resolve_song(title, description, short, from_playlist):
+    """resolve_song の本体。
 
     再生リスト経由の動画は運営が選んだ曲なので、区切りが無くてもタイトル全体を曲名として採る。
     アップロード一覧だけから来た動画は、曲のタイトルらしい形のものだけを採る。
     """
-    if short:
-        tag = song_from_hashtags(title, description)
-        if tag:
-            return tag, "ハッシュタグ", None
     parsed = parse_title(title)
+    if short:
+        # 「曲名 / 誰か」とタイトルにはっきり書いてあれば、ハッシュタグより確か
+        if parsed["song"] and parsed["split"]:
+            return parsed["song"], "タイトル", parsed["note"]
+        if not _NON_SONG_TITLE.search(title):
+            tag = song_from_hashtags(title, description)
+            if tag:
+                return tag, "ハッシュタグ", None
+            bracketed = bracket_song(title)
+            if bracketed:
+                return bracketed, "タイトル(末尾の【】)", None
     if parsed["song"] and (parsed["song_like"] or from_playlist):
         return parsed["song"], "タイトル", parsed["note"]
     return None, None, "曲名を判定できない"
@@ -316,11 +401,12 @@ def member_row(video, member, playlist=None):
 
     song, source, song_note = resolve_song(title, description, short, playlist is not None)
 
-    category = title_category(title) or playlist_category(playlist)
+    category = title_category(title) or hashtag_category(title, description) or playlist_category(playlist)
     notes = []
     if song_note:
         notes.append(song_note)
-    if song and not category:
+    # ショートの企画動画は曲を題材にしただけのものが多く、カバー/オリジナルの区別が付かないのが普通。
+    if song and not category and source != "ハッシュタグ":
         notes.append("カバーかオリジナルか判定できない")
 
     singers = singers_in_title(title)

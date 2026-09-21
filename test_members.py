@@ -359,6 +359,96 @@ def test_collect_member_videos_adds_shorts_outside_the_playlists():
     assert rows[1]["曲名"] == "夜に駆ける" and rows[1]["ショート"] == "はい"
 
 
+# --- 実行結果（1363本）で見つかった誤りの再発防止 ---------------------------
+
+
+def test_member_and_group_names_are_never_a_song_name():
+    """#暇72 #雨乃こさめ などのメンバー名タグが曲名になっていた（暇72が185本）。全角・半角の揺れも同じ。"""
+    for name in ("暇72", "暇７２", "雨乃こさめ", "いるま", "ＬＡＮ", "LAN", "すち", "みこと", "シクフォニ", "SIXFONIA"):
+        assert members.is_member_name(name), name
+    assert members.song_from_hashtags("無人島生活してみたくない？ #shorts", "#shorts #暇72 #シクフォニ #vtuber") is None
+    assert members.song_from_hashtags("逆やろって言わせる #雨乃こさめ #シクフォニ #いるま #マイクラ", "") is None
+    song, source, _ = members.resolve_song("暇72", "", False, True)
+    assert song is None, "どの経路でも、メンバー名は曲名にしない"
+
+
+def test_topic_tags_are_not_songs_but_the_songs_named_by_the_user_are():
+    for tag in ("shortsvideo", "shortsfeed", "イラスト", "マイクラ", "pokemon", "鬼滅の刃", "銀魂", "ado", "dance", "シクフォニ3D"):
+        assert members._is_generic(tag), tag
+    for song in ("irisout", "人マニア", "テトリス", "可愛くてごめん", "モエチャッカファイア"):
+        assert not members._is_generic(song), song
+    assert members.song_from_hashtags("【TikTokでバズ】君たち、ほんと最高だよ。#人マニア #shorts", "") == "人マニア"
+    assert members.song_from_hashtags("今推せば君も新規です！！！#テトリス #歌ってみた #vtuber", "") == "テトリス"
+
+
+def test_illustration_making_of_shorts_do_not_take_a_hashtag_song():
+    """すちの「サムネ描いてみた」は、#歌ってみた が付いていても曲ではない。"""
+    video = make_video("a", "【サムネ描いてみた】 #歌ってみた #イラスト #描いてみた #メイキング #偽物人間40号", "")
+    row = members.member_row(video, "すち", None)
+    assert row["曲名"] == "", row["曲名"]
+
+
+def test_short_title_with_a_slash_beats_the_hashtags():
+    """タイトルに「曲名 / 誰か」とあれば、ハッシュタグ（曲名以外の語が先に来ることがある）より確か。"""
+    cases = [
+        ("【Rap arrange】モエチャッカファイア / いるま", "#zenlesszonezero #歌ってみた", "モエチャッカファイア"),
+        ("【歌い手歴2週間の俺が】ウタカタララバイ/Ado 激ムズラップパート歌った結果wwwwwww", "#Ado #歌ってみた", "ウタカタララバイ"),
+        ("【Remix】p.h. / いるま【シクフォニ】【SEVENTHLINKS】", "#ph #歌ってみた", "p.h."),
+        ("残酷な夜に輝け / LiSA #歌ってみた #LiSA #shorts", "", "残酷な夜に輝け"),
+    ]
+    for title, description, expected in cases:
+        song, source, _ = members.resolve_song(title, description, True, False)
+        assert (song, source) == (expected, "タイトル"), (title, song, source)
+
+
+def test_slash_without_spaces_next_to_japanese_splits_but_digits_do_not():
+    assert members.parse_title("ファタール/キタニタツヤ様 #歌ってみた")["song"] == "ファタール"
+    assert members.parse_title("【圧倒的王子が】妄想アステルパーム/picco様【歌ってみた】#shorts")["song"] == "妄想アステルパーム"
+    assert members.parse_title("2024/09/21 の雑談")["split"] is False
+
+
+def test_new_song_with_quotes_is_an_original():
+    """すちの「新曲⚾️ 『1HOLE』 【すち】」。"""
+    parsed = members.parse_title("新曲⚾️ 『1HOLE』 【すち】 #shorts #vtuber")
+    assert parsed["song"] == "1HOLE"
+    assert members.title_category("新曲⚾️ 『1HOLE』 【すち】") == "original"
+
+
+def test_song_at_the_end_of_the_title_in_brackets():
+    """ハッシュタグから取れないときの予備。「…【曲名】」、「…【曲名】【原曲アーティスト】」。"""
+    assert members.bracket_song("【歌い手が】ちゅ！と言うたびキャラが変わる声真似チャレンジｗｗｗｗ 【可愛くてごめん】#shorts") == "可愛くてごめん"
+    assert members.bracket_song("何が何でも天然水になりたかった成人男性の【とても素敵な六月でした】【Eight】　#shorts") == "とても素敵な六月でした"
+    assert members.bracket_song("声真似オールバックしたら喉終わったわwwwwww 【強風オールバック】#shorts") == "強風オールバック"
+    for title in ("【アニメ】オタクくん～見てる？電話に...【漫画】", "ルールを守って剣と盾チャレンジ【3D】", "曲名／歌ってみた【すち】【シクフォニ】"):
+        assert members.bracket_song(title) is None, title
+
+
+def test_a_lone_hiragana_particle_is_not_a_song():
+    song, _, _ = members.resolve_song("【#多声類】 #新人vtuber の【Bunny Girl / バニーガール】【AKASHI】", "", False, True)
+    assert song != "の"
+
+
+def test_guest_needs_a_member_in_the_line_and_ignores_hashtags():
+    # 原曲側の名義（LAN）: メンバーが並びに居ないので共演者ではない
+    assert members.guest_candidates("【最大の感謝を込めて】セカイ / DECO*27×堀江晶太(kemu) Covered by LAN") == []
+    # 実データの誤検出: ハッシュタグの中の名前を共演者にしていた
+    assert members.guest_candidates("T氏の話を信じるな／暇72×雨乃こさめ #歌ってみた #ピノキオピー #cover") == []
+    # 本物の共演者
+    assert members.guest_candidates("HOWL／すち×超学生【Cover】") == ["超学生"]
+    assert members.guest_candidates("【Cover】Rambling Beast / いるま×しゃけみー×渚トラウト") == ["しゃけみー", "渚トラウト"]
+
+
+def test_category_from_hashtags_and_no_flag_for_a_hashtag_song():
+    video = make_video("a", "今推せば君も新規です！！！#テトリス #歌ってみた #vtuber", "")
+    row = members.member_row(video, "いるま", None)
+    assert (row["曲名"], row["category"], row["要確認"]) == ("テトリス", "cover", "")
+    # 企画動画のように区別が付かないものも、ハッシュタグ由来の曲名なら要確認にしない（大量に立つため）
+    video = make_video("b", "【TikTokでバズ】君たち、ほんと最高だよ。#人マニア #shorts", "")
+    row = members.member_row(video, "暇72", None)
+    assert (row["曲名"], row["category"], row["要確認"]) == ("人マニア", "", "")
+    assert members.hashtag_category("", "#オリジナル曲 #新曲") == "original"
+
+
 # --- fetch_extra member-songs ---------------------------------------------
 
 
