@@ -15,18 +15,22 @@ _DIVIDER = re.compile(r"^[┄─━―—=＝\-]{4,}$")
 _HONORIFIC = re.compile(r"敬称略")
 _NAME_CUT = re.compile(r"[　(（]")
 _MULTI_NAME = re.compile(r"\s*[/／]\s*")
+# 全体が括弧の行は注記であって曲名ではない。「（欅坂46）櫻坂46 『…』」のように括弧のあとに続く曲名は残す。
+_NOTE_LINE = re.compile(r"^[(（][^()（）]*[)）]$")
+_GROUP_TAGLINE = "運命を掴み取る最強の6人"
 
 # 「絵」「動画」は Main Animation ＆ IIlustration のような複合ラベルがあるため部分一致。
 # 綴り揺れ(IIlustration)を吸収するため i/l の繰り返しを許す。
 # 「作詞」「作曲」は Music Video 等への誤爆を避けるため完全一致。
 # Music&Lyrics は作詞と作曲を兼ねるので両方の列に入れる。
 # RAP Lyrics はラップ部分の作詞者。作詞に入れるが、名前に (RAP) を付けて曲全体の作詞者と区別する。
-# 「サムネ」を含むラベルはサムネイル担当で、動画の絵ではないので除外する。
+# 「絵」にはサムネイラストとアニメーションも含める。
 _LABEL_RULES = [
     (("作曲", "作詞"), [r"^musiclyrics$"], True),
     (("作曲",), [r"^music$", r"^composer?$", r"^compose$", r"^作曲$"], True),
     (("作詞",), [r"^lyrics?$", r"^作詞$", r"^raplyrics$"], True),
-    (("絵",), [r"i{1,3}l{0,3}ust?r", r"イラスト", r"作画"], False),
+    # 正規化で長音符が落ちるため「アニメーション」は「アニメ」で拾う
+    (("絵",), [r"i{1,3}l{0,3}ust?r", r"イラスト", r"作画", r"animation", r"アニメ"], False),
     (("動画",), [r"movie", r"^動画$"], False),
 ]
 
@@ -104,8 +108,6 @@ def parse_credit_blocks(description):
 def _match_columns(label):
     """ラベルが入る列を返す。どの列にも当たらなければ空。"""
     normalized = _normalize_label(label)
-    if "サムネ" in normalized:
-        return ()
     for columns, patterns, exact in _LABEL_RULES:
         for pattern in patterns:
             if exact:
@@ -200,6 +202,10 @@ def extract_medley_songs(description):
 
     曲名と原曲アーティストの表記は動画ごとにばらばら（「そばかす」「LiSA『紅蓮華』-MUSiC CLiP-」等）
     なので分離せず、行をそのまま残す。URLと「※」の注記は捨てる。
+
+    区切り線が無い動画（日常の再生リスト）では、本家様欄のあとにクレジット欄や
+    グループ紹介文が続くため、「敬称略」の行で打ち切り、括弧だけの注記
+    （「(公式YouTube動画はございません)」）と紹介文の行は曲として数えない。
     """
     text = strip_invisible(description)
     if "▼本家様" not in text:
@@ -207,9 +213,9 @@ def extract_medley_songs(description):
     songs = []
     for line in text.split("▼本家様", 1)[1].split("\n"):
         s = line.strip()
-        if _DIVIDER.match(s) or s.startswith("▼"):
+        if _DIVIDER.match(s) or s.startswith("▼") or _HONORIFIC.search(s):
             break
-        if not s or s.startswith(("http://", "https://", "※")):
+        if not s or s.startswith(("http://", "https://", "※", _GROUP_TAGLINE)) or _NOTE_LINE.match(s):
             continue
         songs.append(s)
     return songs
@@ -255,6 +261,8 @@ def to_jst_date(published_at):
 
 ROW_FIELDS = [
     "曲名",
+    "曲順",
+    "曲数",
     "投稿日",
     "チャンネル",
     "タイトル",
@@ -266,7 +274,6 @@ ROW_FIELDS = [
     "動画",
     "category",
     "原曲アーティスト",
-    "メドレー収録曲",
     "video_id",
     "動画URL",
     "要確認",
@@ -276,7 +283,12 @@ ROW_FIELDS = [
 
 
 def build_row(video, category):
-    """videos.list の1件を表の1行にする。"""
+    """1動画の代表の1行。メドレーは1曲目の行を返す。"""
+    return build_rows(video, category)[0]
+
+
+def build_rows(video, category):
+    """videos.list の1件を表の行にする。メドレーは本家様欄の曲ごとに1行ずつ。"""
     snippet = video["snippet"]
     title = snippet["title"]
     description = snippet.get("description", "")
@@ -311,8 +323,10 @@ def build_row(video, category):
             continue
         values[column] = " / ".join(entry["names"])
 
-    return {
+    row = {
         "曲名": song or "",
+        "曲順": 1,
+        "曲数": 1,
         "投稿日": to_jst_date(snippet["publishedAt"]),
         "チャンネル": snippet.get("channelTitle", ""),
         # 曲名の抽出に失敗した行を人手で直すには元タイトルが要る
@@ -325,10 +339,16 @@ def build_row(video, category):
         "動画": values["動画"],
         "category": category,
         "原曲アーティスト": original_artist or "",
-        "メドレー収録曲": " | ".join(medley),
         "video_id": video["id"],
         "動画URL": f"https://youtu.be/{video['id']}",
         "要確認": "要確認" if notes else "",
         "要確認理由": " / ".join(notes),
         "raw_description": description,
     }
+    if not medley:
+        return [row]
+    # メドレーは歌企画のCSVと同じく1曲1行。曲名は本家様欄の表記のまま。
+    return [
+        dict(row, 曲名=song_title, 曲順=order, 曲数=len(medley))
+        for order, song_title in enumerate(medley, start=1)
+    ]
